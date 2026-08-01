@@ -93,11 +93,11 @@ pass_filenames = false
 priority = 10
 
 # cargo test: コミットを遅くしないため pre-push でだけ実行する
-# コンテナを要する shiguredo_tokio_postgres は除外し、軽量なテストだけ回す
+# コンテナを要する shiguredo_postgres の統合テストを除外し、軽量なテストだけ回す
 [[repos.hooks]]
 id = "cargo-test"
 name = "cargo test"
-entry = "cargo test --workspace --exclude shiguredo_tokio_postgres"
+entry = "cargo test --workspace --exclude shiguredo_postgres"
 language = "system"
 types = ["rust"]
 pass_filenames = false
@@ -106,9 +106,9 @@ priority = 20
 
 # コンテナベースの統合テストは pre-push で別途実行する
 [[repos.hooks]]
-id = "cargo-test-tokio-postgres"
-name = "cargo test (tokio-postgres integration)"
-entry = "cargo test -p shiguredo_tokio_postgres"
+id = "cargo-test-postgres"
+name = "cargo test (postgres integration)"
+entry = "cargo test -p shiguredo_postgres"
 language = "system"
 types = ["rust"]
 pass_filenames = false
