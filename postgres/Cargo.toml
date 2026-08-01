@@ -1,0 +1,32 @@
+[package]
+name = "shiguredo_postgres"
+version = "2026.0.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# TLS 設定および rustls crypto provider 切り替え
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
+# verify-ca で名前検証とは独立に OS の信頼アンカーを読み込む
+rustls-native-certs = "0.8"
+# verify-full で OS 標準の証明書検証を使う
+rustls-platform-verifier = "0.7"
+# Sans I/O な PostgreSQL プロトコル実装
+shiguredo_postgres_core = { path = "../postgres-core" }
+# 非同期ランタイムおよび TCP/TLS ストリーム処理
+tokio = { version = "1.54", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+# TLS 接続（tokio 上で rustls を動作させる）
+tokio-rustls = { version = "0.26", default-features = false }
+# ログ出力
+tracing = { workspace = true }
+
+[dev-dependencies]
+# TLS の単体テストで使う証明書と鍵を生成する
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+# コンテナベースの統合テスト（macOS は Apple Container、Linux は Docker Engine API）
+shiguredo_container = "2026.1"
+# テスト時の tracing ログ出力
+tracing-subscriber = { workspace = true }
