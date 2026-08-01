@@ -45,7 +45,7 @@ fn connect_authenticated() -> Connection {
     let mut conn = Connection::connect(options()).unwrap();
     assert_eq!(
         conn.request_authentication_start().unwrap(),
-        AuthState::NeedRead
+        AuthState::Send
     );
     let startup = conn.pop_send_queue().unwrap();
     // スタートアップメッセージに user と database が含まれる。
@@ -226,9 +226,8 @@ fn test_authentication_scram() {
     // SASL 応答 (クライアント最終メッセージ) を検証する。
     let (message_type, payload) = pop_client_message(&mut conn);
     assert_eq!(message_type, frontend::PASSWORD);
-    let response_len =
-        i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
-    let client_final = std::str::from_utf8(&payload[4..4 + response_len]).unwrap();
+    // SASL 応答は長さフィールドなしのペイロードそのもの。
+    let client_final = std::str::from_utf8(&payload).unwrap();
     assert!(client_final.starts_with("c=biws,r="));
     assert!(client_final.contains(",p="));
 
@@ -284,9 +283,8 @@ fn test_authentication_scram_wrong_password() {
         .unwrap();
     conn.request_authentication_continue().unwrap();
     let (_, payload) = pop_client_message(&mut conn);
-    let response_len =
-        i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
-    std::str::from_utf8(&payload[4..4 + response_len]).unwrap();
+    // SASL 応答は長さフィールドなしのペイロードそのもの。
+    std::str::from_utf8(&payload).unwrap();
 
     // サーバーが認証失敗としてエラー応答を返す。
     conn.feed_bytes(&error_response(
@@ -674,7 +672,7 @@ fn test_tls_preferred_supported() {
     conn.set_secure(true);
     assert_eq!(
         conn.request_authentication_send_startup().unwrap(),
-        AuthState::NeedRead
+        AuthState::Send
     );
     assert!(!conn.needs_tls_upgrade());
     let startup = conn.pop_send_queue().unwrap();
@@ -696,7 +694,7 @@ fn test_tls_preferred_not_supported() {
     conn.feed_bytes(b"N").unwrap();
     assert_eq!(
         conn.request_authentication_continue().unwrap(),
-        AuthState::NeedRead
+        AuthState::Send
     );
     assert!(!conn.needs_tls_upgrade());
     let startup = conn.pop_send_queue().unwrap();

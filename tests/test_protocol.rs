@@ -64,9 +64,8 @@ fn test_sasl_response() {
     let message = sasl_response(b"c=biws,r=abc,p=xyz");
     let (message_type, payload) = parse_client_message(&message);
     assert_eq!(message_type, frontend::PASSWORD);
-    let length = i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-    assert_eq!(length as usize, payload.len() - 4);
-    assert_eq!(&payload[4..], b"c=biws,r=abc,p=xyz");
+    // ペイロードは追加データそのもの (長さフィールドなし)。
+    assert_eq!(payload, b"c=biws,r=abc,p=xyz");
 }
 
 #[test]

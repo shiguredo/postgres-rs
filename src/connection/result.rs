@@ -91,21 +91,26 @@ impl QueryResult {
                 }
             }
             // コマンド完了。行を返さないクエリ (INSERT 等) で送られる。
+            // PostgreSQL はコマンド完了の後も必ず ReadyForQuery を送るため、
+            // ここでは完了せずに ReadyForQuery を待つ。
             backend::COMMAND_COMPLETE => {
                 self.finish_command(packet)?;
-                Ok(FeedResult::Done)
+                Ok(FeedResult::NeedMore)
             }
             // 空クエリ応答。空文字列のクエリで送られる。
-            backend::EMPTY_QUERY_RESPONSE => {
-                self.read_state = ReadState::Done;
-                Ok(FeedResult::Done)
-            }
+            // この後も ReadyForQuery が送られる。
+            backend::EMPTY_QUERY_RESPONSE => Ok(FeedResult::NeedMore),
             // 拡張クエリプロトコルの前段メッセージはスキップする。
             backend::PARSE_COMPLETE
             | backend::BIND_COMPLETE
             | backend::PARAMETER_DESCRIPTION
             | backend::NO_DATA => Ok(FeedResult::NeedMore),
-            // クエリ処理可能。コマンドの区切りを示す。
+            // 通知応答・非同期通知はクエリの結果とは無関係なのでスキップする。
+            // 例: DROP TABLE は NOTICE を送る場合がある。
+            backend::NOTICE_RESPONSE
+            | backend::NOTIFICATION_RESPONSE
+            | backend::PARAMETER_STATUS => Ok(FeedResult::NeedMore),
+            // クエリ処理可能。コマンドの区切りを示し、これで完了する。
             backend::READY_FOR_QUERY => {
                 let ready = ReadyForQuery::parse(&packet)?;
                 self.transaction_status = Some(ready.transaction_status);
@@ -133,9 +138,11 @@ impl QueryResult {
                     Ok(FeedResult::NeedMore)
                 }
             }
+            // コマンド完了。この後も ReadyForQuery が送られるため、
+            // ここでは完了せずに ReadyForQuery を待つ。
             backend::COMMAND_COMPLETE => {
                 self.finish_command(packet)?;
-                Ok(FeedResult::Done)
+                Ok(FeedResult::NeedMore)
             }
             backend::READY_FOR_QUERY => {
                 let ready = ReadyForQuery::parse(&packet)?;
@@ -147,16 +154,22 @@ impl QueryResult {
                 let response = ErrorResponse::parse(&packet)?;
                 Err(crate::error::from_error_response(&response))
             }
+            // 通知応答・非同期通知はクエリの結果とは無関係なのでスキップする。
+            backend::NOTICE_RESPONSE
+            | backend::NOTIFICATION_RESPONSE
+            | backend::PARAMETER_STATUS => Ok(FeedResult::NeedMore),
             _ => Err(protocol_error(&packet)),
         }
     }
 
     /// コマンド完了メッセージを処理する。
+    ///
+    /// 影響を受けた行数とタグを記録する。完了状態には遷移しない。
+    /// 完了は ReadyForQuery メッセージで通知される。
     fn finish_command(&mut self, packet: PostgresPacket) -> Result<()> {
         let command = CommandComplete::parse(&packet)?;
         self.tag = Some(command.tag.clone());
         self.affected_rows = parse_affected_rows(&command.tag);
-        self.read_state = ReadState::Done;
         Ok(())
     }
 
@@ -191,15 +204,13 @@ impl QueryResult {
         &mut self,
         packet: PostgresPacket,
     ) -> Result<Option<Vec<Value>>> {
-        if !self.unbuffered_active {
-            return Ok(None);
-        }
         match packet.message_type {
             backend::DATA_ROW => {
                 let row = self.read_row(packet)?;
                 self.rows = vec![row.clone()];
                 Ok(Some(row))
             }
+            // コマンド完了。この後も ReadyForQuery が送られる。
             backend::COMMAND_COMPLETE => {
                 self.finish_command(packet)?;
                 self.unbuffered_active = false;
@@ -212,6 +223,9 @@ impl QueryResult {
                 self.unbuffered_active = false;
                 Ok(None)
             }
+            backend::NOTICE_RESPONSE
+            | backend::NOTIFICATION_RESPONSE
+            | backend::PARAMETER_STATUS => Ok(None),
             backend::ERROR_RESPONSE => {
                 let response = ErrorResponse::parse(&packet)?;
                 self.unbuffered_active = false;
@@ -222,13 +236,12 @@ impl QueryResult {
     }
 
     /// アンバッファードクエリを終了し、残りの行を読み飛ばす。
+    ///
+    /// ReadyForQuery を受信して完了状態になるまで読み込む。
     pub fn finish_unbuffered(&mut self, conn: &mut crate::connection::Connection) -> Result<()> {
-        while self.unbuffered_active {
+        while !self.is_done() {
             let packet = conn.read_packet()?;
-            match self.read_rowdata_packet_unbuffered(packet)? {
-                Some(_) => continue,
-                None => break,
-            }
+            self.read_rowdata_packet_unbuffered(packet)?;
         }
         Ok(())
     }

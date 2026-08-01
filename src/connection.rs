@@ -37,6 +37,14 @@ pub struct ConnectOptions {
     pub application_name: Option<String>,
     pub connect_timeout: Duration,
     pub ssl_mode: SslMode,
+    /// CA 証明書のファイルパス。指定がない場合は OS 標準の証明書ストアを使う。
+    pub ssl_ca: Option<String>,
+    /// クライアント証明書のファイルパス。
+    pub ssl_cert: Option<String>,
+    /// クライアント秘密鍵のファイルパス。
+    pub ssl_key: Option<String>,
+    /// 証明書のホスト名検証を行うかどうか。
+    pub ssl_verify_identity: bool,
     pub max_message_size: usize,
 }
 
@@ -51,6 +59,10 @@ impl Default for ConnectOptions {
             application_name: None,
             connect_timeout: Duration::from_secs(10),
             ssl_mode: SslMode::Preferred,
+            ssl_ca: None,
+            ssl_cert: None,
+            ssl_key: None,
+            ssl_verify_identity: false,
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
         }
     }
@@ -238,18 +250,26 @@ impl Connection {
     /// 影響を受けた行数を返す。
     /// 受信キューに十分なメッセージがない場合は `Error::NeedMoreData` を返す。
     pub fn query(&mut self, sql: &str, unbuffered: bool) -> Result<i64> {
+        self.send_query(sql)?;
+        self.read_query_result(unbuffered)
+    }
+
+    /// クエリメッセージを送信キューに追加する (単純クエリプロトコル)。
+    ///
+    /// 前回の結果の読み残しを回収してから送信する。
+    /// 受信キューに十分なメッセージがない場合は `Error::NeedMoreData` を返す
+    /// (読み残しの回収中の場合)。
+    pub fn send_query(&mut self, sql: &str) -> Result<()> {
         self.finish_previous_result()?;
         if self.closed {
             return Err(Error::InterfaceError {
                 message: "Connection is closed".to_string(),
             });
         }
-        tracing::debug!(sql = %sql, unbuffered, "Executing query");
+        tracing::debug!(sql = %sql, "Sending query");
         let message = crate::protocol::query_message(sql);
         self.packet_stream.write_message(&message);
-        let affected_rows = self.read_query_result(unbuffered)?;
-        tracing::debug!(affected_rows, "Query executed");
-        Ok(affected_rows)
+        Ok(())
     }
 
     /// パラメータ付きクエリを実行する (拡張クエリプロトコル)。
@@ -263,13 +283,31 @@ impl Connection {
         parameters: &[crate::converters::Value],
         unbuffered: bool,
     ) -> Result<i64> {
+        self.send_execute(sql, parameters)?;
+        self.read_query_result(unbuffered)
+    }
+
+    /// パラメータ付きクエリのメッセージ群を送信キューに追加する (拡張クエリプロトコル)。
+    ///
+    /// 前回の結果の読み残しを回収してから送信する。
+    /// 受信キューに十分なメッセージがない場合は `Error::NeedMoreData` を返す
+    /// (読み残しの回収中の場合)。
+    pub fn send_execute(
+        &mut self,
+        sql: &str,
+        parameters: &[crate::converters::Value],
+    ) -> Result<()> {
         self.finish_previous_result()?;
         if self.closed {
             return Err(Error::InterfaceError {
                 message: "Connection is closed".to_string(),
             });
         }
-        tracing::debug!(sql = %sql, parameter_count = parameters.len(), unbuffered, "Executing statement");
+        tracing::debug!(
+            sql = %sql,
+            parameter_count = parameters.len(),
+            "Sending statement"
+        );
         let encoded: Vec<Option<Vec<u8>>> = parameters.iter().map(|v| v.to_bytes()).collect();
         let refs: Vec<Option<&[u8]>> = encoded.iter().map(|p| p.as_deref()).collect();
 
@@ -283,10 +321,7 @@ impl Connection {
         for message in [parse, bind, describe, execute, sync] {
             self.packet_stream.write_message(&message);
         }
-
-        let affected_rows = self.read_query_result(unbuffered)?;
-        tracing::debug!(affected_rows, "Statement executed");
-        Ok(affected_rows)
+        Ok(())
     }
 
     /// 結果セットを読み込む。

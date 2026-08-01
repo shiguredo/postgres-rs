@@ -62,7 +62,7 @@ impl Connection {
 
         self.write_startup_message()?;
         self.auth_phase = AuthPhase::Initial;
-        Ok(AuthState::NeedRead)
+        Ok(AuthState::Send)
     }
 
     /// TLS アップグレード後にスタートアップメッセージを送信する。
@@ -78,7 +78,7 @@ impl Connection {
         self.write_startup_message()?;
         self.needs_tls_upgrade = false;
         self.auth_phase = AuthPhase::Initial;
-        Ok(AuthState::NeedRead)
+        Ok(AuthState::Send)
     }
 
     /// スタートアップメッセージを組み立てて送信キューに追加する。
@@ -192,7 +192,7 @@ impl Connection {
                 }
                 tracing::debug!("Server does not support SSL, continuing without it");
                 self.write_startup_message()?;
-                Ok(AuthState::NeedRead)
+                Ok(AuthState::Send)
             }
             _ => Err(Error::InternalError {
                 code: String::new(),

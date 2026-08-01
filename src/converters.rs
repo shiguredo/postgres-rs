@@ -226,8 +226,10 @@ fn convert_timestamptz(s: &str) -> Value {
     }
 }
 
-/// 末尾のタイムゾーンオフセットのコロンを除去して正規化する。
+/// 末尾のタイムゾーンオフセットを chrono がパースできる形式に正規化する。
 ///
+/// PostgreSQL は `+09` / `+0900` / `+09:00` のいずれでも送るため、
+/// コロンを除去して `±HH` は `±HH00` に補う。
 /// `2024-01-01 12:00:00+09:00` を `2024-01-01 12:00:00+0900` にする。
 /// 日付・時刻は空白区切りで、オフセットは時刻部分の直後に付く。
 /// `BC` 付きの日付 (オフセットなし) はそのまま返す。
@@ -239,7 +241,16 @@ fn normalize_offset(s: &str) -> String {
     match tail.find(['+', '-']) {
         Some(pos) => {
             let (time, offset) = tail.split_at(pos);
-            format!("{}{}{}", head, time, offset.replace(':', ""))
+            let offset = offset.replace(':', "");
+            // オフセットは ±HH (3 文字) または ±HHMM (5 文字) の形式。
+            // ±HH は ±HH00 に補う。それ以外の形式はパースできないため、
+            // そのまま返す (呼び出し側で Text にフォールバックする)。
+            let normalized = match offset.len() {
+                3 => format!("{}00", offset),
+                5 => offset,
+                _ => return s.to_string(),
+            };
+            format!("{}{}{}", head, time, normalized)
         }
         None => s.to_string(),
     }

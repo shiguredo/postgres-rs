@@ -87,12 +87,12 @@ pub fn sasl_initial_response(mechanism: &str, initial_response: &[u8]) -> Vec<u8
 
 /// SASL 応答メッセージを組み立てる。
 ///
-/// ペイロードは追加データの長さ + 追加データ本体。
+/// ペイロードは追加データそのもの (長さフィールドなし)。
+/// PostgreSQL のサーバーは SASLInitialResponse 以降の 'p' メッセージを
+/// ペイロード全体をそのまま SCRAM メッセージとして扱う
+/// (`src/backend/libpq/auth-sasl.c` の `CheckSASLAuth` を参照)。
 pub fn sasl_response(data: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&(data.len() as i32).to_be_bytes());
-    payload.extend_from_slice(data);
-    frontend_message(crate::constants::frontend::PASSWORD, &payload)
+    frontend_message(crate::constants::frontend::PASSWORD, data)
 }
 
 /// 終了メッセージを組み立てる。
