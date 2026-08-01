@@ -18,30 +18,42 @@ pub fn init_tracing() {
     let _ = tracing_subscriber::fmt::try_init();
 }
 
+/// テスト対象の PostgreSQL メジャーバージョン。
+///
+/// 環境変数 `POSTGRES_VERSION` で指定する (デフォルトは 17)。
+/// CI では matrix で 18 / 17 / 16 を切り替えて実行する。
+pub fn postgres_version() -> String {
+    std::env::var("POSTGRES_VERSION").unwrap_or_else(|_| "17".to_string())
+}
+
 /// PostgreSQL コンテナのイメージを組み立てる。
-fn postgres_image() -> ContainerRequest<GenericImage> {
-    GenericImage::new("postgres", "17")
+fn postgres_image(version: &str) -> ContainerRequest<GenericImage> {
+    GenericImage::new("postgres", version)
         .with_exposed_port(5432.tcp())
         .with_ready_conditions(vec![WaitFor::message_on_stdout(
             "database system is ready to accept connections",
         )])
-}
-
-/// コンテナ起動後の PostgreSQL に接続するための接続オプションを組み立てる。
-pub async fn build_postgres_options() -> (ConnectOptions, ContainerAsync<GenericImage>) {
-    let node = postgres_image()
-        .with_env_var("POSTGRES_PASSWORD", "password")
-        .with_env_var("POSTGRES_DB", "test")
         // Apple Container はイメージの ENV を継承しないため、
         // データディレクトリと PATH を明示的に指定する。
         .with_env_var("PGDATA", "/var/lib/postgresql/data")
         .with_env_var(
             "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/17/bin",
+            format!(
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/{}/bin",
+                version
+            ),
         )
+}
+
+/// コンテナ起動後の PostgreSQL に接続するための接続オプションを組み立てる。
+pub async fn build_postgres_options() -> (ConnectOptions, ContainerAsync<GenericImage>) {
+    let version = postgres_version();
+    let node = postgres_image(&version)
+        .with_env_var("POSTGRES_PASSWORD", "password")
+        .with_env_var("POSTGRES_DB", "test")
         .start()
         .await
-        .expect("PostgreSQL コンテナの起動に失敗しました");
+        .unwrap_or_else(|e| panic!("PostgreSQL {} コンテナの起動に失敗しました: {}", version, e));
 
     // macOS (Apple Container) ではコンテナの IP に直接接続する。
     // ポートフォワードは initdb の一時サーバーから本番サーバーへの
