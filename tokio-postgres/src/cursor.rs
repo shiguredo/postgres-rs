@@ -132,15 +132,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-impl Drop for Cursor<'_> {
-    fn drop(&mut self) {
-        if !self.closed {
-            // 非同期処理は drop では実行できないため、closed フラグのみ立てる。
-            self.closed = true;
-        }
-    }
-}
-
 /// 辞書形式で結果を返すカーソル。
 pub struct DictCursor<'a> {
     inner: Cursor<'a>,
