@@ -9,9 +9,9 @@ publish = false
 
 [dependencies]
 # 暗号処理（SHA-256、HMAC、PBKDF2、定数時間比較、乱数）
-aws-lc-rs = "1.17"
+aws-lc-rs = { workspace = true }
 # SCRAM 認証の base64 エンコード・デコード
-base64ct = { version = "1.8", features = ["std"] }
+base64ct = { workspace = true }
 chrono = { workspace = true }
 # MD5 認証のハッシュ計算
 md-5 = "0.10"

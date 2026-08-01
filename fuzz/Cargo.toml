@@ -1,0 +1,48 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.93"
+repository = "https://github.com/shiguredo/postgres-rs"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_packet"
+path = "fuzz_targets/fuzz_packet.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_protocol"
+path = "fuzz_targets/fuzz_protocol.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_converters"
+path = "fuzz_targets/fuzz_converters.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_auth"
+path = "fuzz_targets/fuzz_auth.rs"
+test = false
+
+[dependencies]
+# libFuzzer 用の FFI レイヤー
+libfuzzer-sys = "0.4"
+
+[dependencies.shiguredo_postgres_core]
+path = "../postgres-core"

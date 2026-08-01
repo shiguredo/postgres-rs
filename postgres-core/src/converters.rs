@@ -456,6 +456,11 @@ fn array_inner(s: &str) -> Option<&str> {
 /// 引用符で囲まれた要素は引用符を除去し、エスケープを解決する。
 /// 引用符の対応や波括弧の対応が不正な場合は `None` を返す。
 fn split_array_elements(inner: &str) -> Option<Vec<Option<String>>> {
+    // PostgreSQL は空配列 `{}` と空白だけの `{ }` を空の要素リストとして扱う。
+    // `src/backend/utils/adt/arrayfuncs.c` の `ReadArrayStr` を参照。
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
     let mut elements = Vec::new();
     let mut current = String::new();
     let mut in_quote = false;
@@ -796,6 +801,34 @@ mod tests {
         assert_eq!(
             convert_int4_array("{\"a}"),
             Value::Text("{\"a}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_convert_array_empty() {
+        // PostgreSQL の空配列 `{}` は空の要素リストとして扱う。
+        assert_eq!(
+            convert_int4_array("{}"),
+            Value::Array {
+                element_type: oid::INT4,
+                values: Vec::new(),
+            }
+        );
+        // 空白だけの `{ }` も空の要素リストとして扱う。
+        assert_eq!(
+            convert_int4_array("{ }"),
+            Value::Array {
+                element_type: oid::INT4,
+                values: Vec::new(),
+            }
+        );
+        // 引用符付きの空文字列 `{""}` は空文字列 1 要素の配列として扱う。
+        assert_eq!(
+            convert_int4_array("{\"\"}"),
+            Value::Array {
+                element_type: oid::INT4,
+                values: vec![Value::Text(String::new())],
+            }
         );
     }
 

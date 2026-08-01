@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["postgres", "postgres-core"]
+members = ["pbt", "postgres", "postgres-core"]
+exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"
@@ -9,8 +10,14 @@ repository = "https://github.com/shiguredo/postgres-rs"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+# 暗号処理（SHA-256、HMAC、PBKDF2、定数時間比較、乱数）
+aws-lc-rs = "1.17"
+# SCRAM 認証の base64 エンコード・デコード
+base64ct = { version = "1.8", features = ["std"] }
 # 日付・時刻型
 chrono = { version = "0.4", features = ["std"] }
+# PBT (Property-Based Testing)
+proptest = "1.11"
 # ログ出力
 tracing = "0.1"
 # テスト時の tracing ログ出力

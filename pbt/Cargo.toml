@@ -1,0 +1,20 @@
+[package]
+name = "pbt"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# 暗号処理（テスト用の SCRAM サーバー側実装）
+aws-lc-rs = { workspace = true }
+# SCRAM 認証の base64 エンコード・デコード（テスト用のサーバー側実装）
+base64ct = { workspace = true }
+# 日付・時刻型（postgres-core と同じバージョン）
+chrono = { workspace = true }
+# PBT (Property-Based Testing)
+proptest = { workspace = true }
+# Sans I/O な PostgreSQL プロトコル実装
+shiguredo_postgres_core = { path = "../postgres-core" }
