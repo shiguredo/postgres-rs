@@ -1,0 +1,6 @@
+# Agents
+.claude/
+.codex/
+.cursor/
+.opencode/
+target/
