@@ -11,10 +11,10 @@
 mod helpers;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use shiguredo_postgres::converters::Value;
-use shiguredo_postgres::error::Error;
-use shiguredo_tokio_postgres::cursor::{Cursor, DictCursor};
-use shiguredo_tokio_postgres::pool::PoolConfig;
+use shiguredo_postgres::cursor::{Cursor, DictCursor};
+use shiguredo_postgres::pool::PoolConfig;
+use shiguredo_postgres_core::converters::Value;
+use shiguredo_postgres_core::error::Error;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -210,7 +210,7 @@ async fn test_null_values() {
         .execute("INSERT INTO not_null_test VALUES ($1)", &[Value::Null])
         .await;
     assert!(
-        matches!(result, Err(Error::IntegrityError { ref code, .. }) if code == "23502"),
+        matches!(&result, Err(Error::IntegrityError(info)) if info.code == "23502"),
         "SQLSTATE 23502 が期待されるが {:?} が返った",
         result
     );
@@ -392,7 +392,7 @@ async fn test_server_error() {
     // 存在しないテーブルへのクエリ。
     let result = cursor.query("SELECT * FROM no_such_table").await;
     assert!(
-        matches!(result, Err(Error::ProgrammingError { ref code, .. }) if code == "42P01"),
+        matches!(&result, Err(Error::ProgrammingError(info)) if info.code == "42P01"),
         "SQLSTATE 42P01 が期待されるが {:?} が返った",
         result
     );
@@ -400,7 +400,7 @@ async fn test_server_error() {
     // 構文エラー。
     let result = cursor.query("SELECT FROM").await;
     assert!(
-        matches!(result, Err(Error::ProgrammingError { ref code, .. }) if code == "42601"),
+        matches!(&result, Err(Error::ProgrammingError(info)) if info.code == "42601"),
         "SQLSTATE 42601 が期待されるが {:?} が返った",
         result
     );
@@ -437,7 +437,7 @@ async fn test_integrity_error() {
         .execute("INSERT INTO unique_test VALUES ($1)", &[Value::Int4(1)])
         .await;
     assert!(
-        matches!(result, Err(Error::IntegrityError { ref code, .. }) if code == "23505"),
+        matches!(&result, Err(Error::IntegrityError(info)) if info.code == "23505"),
         "SQLSTATE 23505 が期待されるが {:?} が返った",
         result
     );
@@ -587,7 +587,7 @@ async fn test_transaction_status() {
     let (options, _node) = helpers::build_postgres_options().await;
     let mut conn = helpers::connect(&options).await;
 
-    use shiguredo_postgres::constants::transaction_status;
+    use shiguredo_postgres_core::constants::transaction_status;
     assert_eq!(
         conn.transaction_status(),
         transaction_status::IDLE,
@@ -629,7 +629,7 @@ async fn test_invalid_utf8_error() {
         )
         .await;
     assert!(
-        matches!(result, Err(Error::DataError { ref code, .. }) if code == "22021"),
+        matches!(&result, Err(Error::DataError(info)) if info.code == "22021"),
         "SQLSTATE 22021 が期待されるが {:?} が返った",
         result
     );

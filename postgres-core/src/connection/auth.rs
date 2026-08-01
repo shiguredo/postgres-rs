@@ -4,7 +4,7 @@
 //! PostgreSQL 認証状態機械。
 
 use crate::auth::{ScramClient, md5_password_hash};
-use crate::connection::{AuthState, Connection, SslMode};
+use crate::connection::{AuthState, ConnectOptions, Connection, SslMode};
 use crate::constants::{auth, backend};
 use crate::error::{Error, Result};
 use crate::protocol::{
@@ -13,6 +13,13 @@ use crate::protocol::{
 
 /// SASL 認証で使用するメカニズム名。
 const SCRAM_SHA_256: &str = "SCRAM-SHA-256";
+
+/// OAuth 認証で使用するメカニズム名。
+///
+/// PostgreSQL の OAuth 認証 (pg_hba.conf の `oauth` メソッド) は
+/// SASL OAUTHBEARER メカニズム (RFC 7628) を使う。
+/// サーバー実装は PostgreSQL の `src/backend/libpq/auth-oauth.c` を参照。
+const OAUTHBEARER: &str = "OAUTHBEARER";
 
 /// 認証処理の段階。
 ///
@@ -27,6 +34,8 @@ pub enum AuthPhase {
     Md5,
     /// 平文パスワード認証中。
     Cleartext,
+    /// OAuth (OAUTHBEARER) 認証中。
+    Oauth,
 }
 
 impl Connection {
@@ -46,10 +55,7 @@ impl Connection {
             });
         }
 
-        let do_ssl = match self.options.ssl_mode {
-            SslMode::Disabled => false,
-            SslMode::Preferred | SslMode::Required => true,
-        };
+        let do_ssl = !matches!(self.options.ssl_mode, SslMode::Disabled);
 
         if do_ssl {
             let message = crate::protocol::ssl_request_message();
@@ -155,26 +161,20 @@ impl Connection {
                 tracing::debug!(transaction_status = status, "Authentication complete");
                 Ok(AuthState::Success)
             }
-            _ => Err(Error::InternalError {
-                code: String::new(),
-                message: format!(
-                    "Unexpected message during authentication: '{}' (0x{:02x})",
-                    packet.message_type as char, packet.message_type
-                ),
-            }),
+            _ => Err(Error::internal(format!(
+                "Unexpected message during authentication: '{}' (0x{:02x})",
+                packet.message_type as char, packet.message_type
+            ))),
         }
     }
 
     /// SSL 要求への応答 (1 バイトのみ) を処理する。
     fn process_tls_response(&mut self, packet: PostgresPacket) -> Result<AuthState> {
         if !packet.data.is_empty() {
-            return Err(Error::InternalError {
-                code: String::new(),
-                message: format!(
-                    "Invalid TLS response: expected 1 byte, got {} bytes",
-                    packet.data.len()
-                ),
-            });
+            return Err(Error::internal(format!(
+                "Invalid TLS response: expected 1 byte, got {} bytes",
+                packet.data.len()
+            )));
         }
         match packet.message_type {
             // 'S' は ParameterStatus のタイプと同一だが、
@@ -184,23 +184,24 @@ impl Connection {
                 Ok(AuthState::Send)
             }
             b'N' => {
-                if self.options.ssl_mode == SslMode::Required {
-                    return Err(Error::OperationalError {
-                        code: String::new(),
-                        message: "SSL is required but the server doesn't support it".to_string(),
-                    });
+                // Required / VerifyCa / VerifyFull はサーバーが SSL に
+                // 対応していない場合にエラーにする。
+                // Allow / Preferred は平文にフォールバックする。
+                let ssl_required =
+                    !matches!(self.options.ssl_mode, SslMode::Allow | SslMode::Preferred);
+                if ssl_required {
+                    return Err(Error::operational(
+                        "SSL is required but the server doesn't support it",
+                    ));
                 }
                 tracing::debug!("Server does not support SSL, continuing without it");
                 self.write_startup_message()?;
                 Ok(AuthState::Send)
             }
-            _ => Err(Error::InternalError {
-                code: String::new(),
-                message: format!(
-                    "Invalid TLS response: got '{}' (0x{:02x}), expected 'S' or 'N'",
-                    packet.message_type as char, packet.message_type
-                ),
-            }),
+            _ => Err(Error::internal(format!(
+                "Invalid TLS response: got '{}' (0x{:02x}), expected 'S' or 'N'",
+                packet.message_type as char, packet.message_type
+            ))),
         }
     }
 
@@ -220,13 +221,10 @@ impl Connection {
             }
             auth::MD5_PASSWORD => {
                 if auth_request.data.len() != 4 {
-                    return Err(Error::InternalError {
-                        code: String::new(),
-                        message: format!(
-                            "Invalid MD5 salt length: expected 4, got {}",
-                            auth_request.data.len()
-                        ),
-                    });
+                    return Err(Error::internal(format!(
+                        "Invalid MD5 salt length: expected 4, got {}",
+                        auth_request.data.len()
+                    )));
                 }
                 let mut salt = [0u8; 4];
                 salt.copy_from_slice(&auth_request.data);
@@ -239,14 +237,22 @@ impl Connection {
             auth::SASL => {
                 let mechanisms = auth_request.mechanisms();
                 tracing::debug!(mechanisms = ?mechanisms, "SASL mechanisms offered");
+                // OAuth トークンが設定されていてサーバーが OAUTHBEARER を
+                // 提供している場合は OAuth 認証を選ぶ (libpq と同じ挙動)。
+                if self.options.oauth_token.is_some() && mechanisms.iter().any(|m| m == OAUTHBEARER)
+                {
+                    let initial = oauth_initial_response(&self.options)?;
+                    let message =
+                        crate::protocol::sasl_initial_response(OAUTHBEARER, initial.as_bytes());
+                    self.packet_stream.write_message(&message);
+                    self.auth_phase = AuthPhase::Oauth;
+                    return Ok(AuthState::Send);
+                }
                 if !mechanisms.iter().any(|m| m == SCRAM_SHA_256) {
-                    return Err(Error::NotSupportedError {
-                        code: String::new(),
-                        message: format!(
-                            "SCRAM-SHA-256 is not supported by the server: {:?}",
-                            mechanisms
-                        ),
-                    });
+                    return Err(Error::not_supported(format!(
+                        "SCRAM-SHA-256 is not supported by the server: {:?}",
+                        mechanisms
+                    )));
                 }
                 let scram = ScramClient::new()?;
                 let client_first = scram.client_first_message();
@@ -258,15 +264,20 @@ impl Connection {
                 Ok(AuthState::Send)
             }
             auth::SASL_CONTINUE => {
-                if self.auth_phase != AuthPhase::Scram {
-                    return Err(Error::InternalError {
-                        code: String::new(),
-                        message: "Received SASL continue without starting SASL".to_string(),
-                    });
+                if self.auth_phase == AuthPhase::Oauth {
+                    // サーバーがトークンを拒否した (RFC 7628 のエラー応答)。
+                    // 新しいトークンで接続をやり直す必要がある。
+                    // 同一接続で再認証を試みてもサーバーは kvsep 応答のみ
+                    // 受け付けるため、接続の張り直しは呼び出し側が行う。
+                    return Err(Error::NeedOAuthToken);
                 }
-                let scram = self.scram.as_mut().ok_or_else(|| Error::InternalError {
-                    code: String::new(),
-                    message: "SASL continue without SCRAM client state".to_string(),
+                if self.auth_phase != AuthPhase::Scram {
+                    return Err(Error::internal(
+                        "Received SASL continue without starting SASL".to_string(),
+                    ));
+                }
+                let scram = self.scram.as_mut().ok_or_else(|| {
+                    Error::internal("SASL continue without SCRAM client state".to_string())
                 })?;
                 let server_first = auth_request.as_str()?;
                 let client_final =
@@ -276,25 +287,44 @@ impl Connection {
                 Ok(AuthState::Send)
             }
             auth::SASL_FINAL => {
-                if self.auth_phase != AuthPhase::Scram {
-                    return Err(Error::InternalError {
-                        code: String::new(),
-                        message: "Received SASL final without starting SASL".to_string(),
-                    });
+                if self.auth_phase == AuthPhase::Oauth {
+                    // OAuth ではサーバーは検証成功時に最終メッセージを送らず、
+                    // 直接 AuthenticationOK を送る。防御的にここでは
+                    // 認証完了として AuthenticationOK を待つ。
+                    return Ok(AuthState::NeedRead);
                 }
-                let scram = self.scram.as_ref().ok_or_else(|| Error::InternalError {
-                    code: String::new(),
-                    message: "SASL final without SCRAM client state".to_string(),
+                if self.auth_phase != AuthPhase::Scram {
+                    return Err(Error::internal(
+                        "Received SASL final without starting SASL".to_string(),
+                    ));
+                }
+                let scram = self.scram.as_ref().ok_or_else(|| {
+                    Error::internal("SASL final without SCRAM client state".to_string())
                 })?;
                 let server_final = auth_request.as_str()?;
                 scram.handle_server_final(server_final)?;
                 tracing::debug!("SCRAM server signature verified");
                 Ok(AuthState::NeedRead)
             }
-            code => Err(Error::NotSupportedError {
-                code: String::new(),
-                message: format!("Authentication method {} is not supported", code),
-            }),
+            code => Err(Error::not_supported(format!(
+                "Authentication method {} is not supported",
+                code
+            ))),
         }
     }
+}
+
+/// OAUTHBEARER の初期応答を組み立てる。
+///
+/// RFC 7628 Sec. 3.1 の形式で、GS2 ヘッダー (`n,,`) の後に
+/// kvsep 区切りの key-value ペアを続ける。
+/// libpq と同じく `auth=Bearer <token>` のみを送り、
+/// host / port は含めない。
+fn oauth_initial_response(options: &ConnectOptions) -> Result<String> {
+    let token = options.oauth_token.as_ref().ok_or_else(|| {
+        Error::not_supported(
+            "The server requires OAuth authentication but no OAuth token is configured",
+        )
+    })?;
+    Ok(format!("n,,\x01auth=Bearer {}\x01\x01", token))
 }

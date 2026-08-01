@@ -16,6 +16,12 @@ pub const SSL_REQUEST_CODE: u32 = 80_877_103;
 /// GSSAPI 暗号化要求コード。
 pub const GSSENC_REQUEST_CODE: u32 = 80_877_104;
 
+/// キャンセル要求コード。
+///
+/// 進行中のクエリをキャンセルするために、別の接続から
+/// バックエンドプロセス ID とシークレットキーとともに送信する。
+pub const CANCEL_REQUEST_CODE: u32 = 80_877_102;
+
 /// バックエンド (サーバー) から送信されるメッセージタイプ。
 pub mod backend {
     /// 認証要求。
@@ -143,12 +149,17 @@ pub mod describe {
 /// データ型の OID。
 ///
 /// PostgreSQL の pg_type システムカタログに定義されている標準型の OID。
+/// 配列型の OID は要素型ごとに固定されており、将来のバージョンで
+/// 変更される可能性は低いが、独自型の配列はここに含まれない。
 pub mod oid {
     pub const BOOL: u32 = 16;
     pub const BYTEA: u32 = 17;
+    pub const CHAR: u32 = 18;
+    pub const NAME: u32 = 19;
     pub const INT8: u32 = 20;
     pub const INT2: u32 = 21;
     pub const INT4: u32 = 23;
+    pub const OID: u32 = 26;
     pub const TEXT: u32 = 25;
     pub const JSON: u32 = 114;
     pub const JSONB: u32 = 3802;
@@ -162,5 +173,33 @@ pub mod oid {
     pub const TIMESTAMP: u32 = 1114;
     pub const TIMESTAMPTZ: u32 = 1184;
     pub const UUID: u32 = 2950;
-    pub const NAME: u32 = 19;
+
+    /// 組み込み型の配列型 OID。
+    ///
+    /// サーバーは配列の要素型をクライアントに直接送らないため、
+    /// 配列型 OID から要素型 OID への対応をクライアント側で持つ。
+    /// ここにない配列型 (独自型・複合型の配列) はテキストとして扱う。
+    pub mod array {
+        pub const BOOL: u32 = 1000;
+        pub const BYTEA: u32 = 1001;
+        pub const CHAR: u32 = 1002;
+        pub const NAME: u32 = 1003;
+        pub const INT2: u32 = 1005;
+        pub const INT4: u32 = 1007;
+        pub const TEXT: u32 = 1009;
+        pub const BPCHAR: u32 = 1014;
+        pub const VARCHAR: u32 = 1015;
+        pub const INT8: u32 = 1016;
+        pub const FLOAT4: u32 = 1021;
+        pub const FLOAT8: u32 = 1022;
+        pub const OID: u32 = 1028;
+        pub const DATE: u32 = 1182;
+        pub const TIME: u32 = 1183;
+        pub const TIMESTAMP: u32 = 1115;
+        pub const TIMESTAMPTZ: u32 = 1185;
+        pub const NUMERIC: u32 = 1231;
+        pub const JSON: u32 = 199;
+        pub const JSONB: u32 = 3807;
+        pub const UUID: u32 = 2951;
+    }
 }

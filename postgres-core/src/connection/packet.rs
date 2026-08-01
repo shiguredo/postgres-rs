@@ -91,21 +91,18 @@ impl PacketStream {
             ]) as usize;
             if length < 4 {
                 self.force_close();
-                return Err(Error::InternalError {
-                    code: String::new(),
-                    message: format!("Invalid message length: {} (must be at least 4)", length),
-                });
+                return Err(Error::internal(format!(
+                    "Invalid message length: {} (must be at least 4)",
+                    length
+                )));
             }
             let payload_len = length - 4;
             if payload_len > self.max_message_size {
                 self.force_close();
-                return Err(Error::InternalError {
-                    code: String::new(),
-                    message: format!(
-                        "Got message larger than max_message_size bytes ({} > {})",
-                        payload_len, self.max_message_size
-                    ),
-                });
+                return Err(Error::internal(format!(
+                    "Got message larger than max_message_size bytes ({} > {})",
+                    payload_len, self.max_message_size
+                )));
             }
             let total_len = 5 + payload_len;
             if self.recv_buffer.len() < total_len {

@@ -4,9 +4,9 @@
 //! カーソル実装。
 
 use crate::connection::Connection;
-use shiguredo_postgres::converters::Value;
-use shiguredo_postgres::error::{Error, Result};
-use shiguredo_postgres::protocol::FieldDescription;
+use shiguredo_postgres_core::converters::Value;
+use shiguredo_postgres_core::error::{Error, Result};
+use shiguredo_postgres_core::protocol::FieldDescription;
 use std::collections::HashMap;
 
 /// 標準カーソル。

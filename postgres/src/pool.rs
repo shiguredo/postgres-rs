@@ -8,8 +8,8 @@
 //! Mutex / RwLock は使用しない。
 
 use crate::connection::Connection;
-use shiguredo_postgres::connection::ConnectOptions;
-use shiguredo_postgres::error::{Error, Result};
+use shiguredo_postgres_core::connection::ConnectOptions;
+use shiguredo_postgres_core::error::{Error, Result};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -256,7 +256,7 @@ impl PoolManager {
                             self.handle_acquire(reply).await;
                         }
                         PoolRequest::Return { conn, created_at } => {
-                            self.handle_return(conn, created_at);
+                            self.handle_return(conn, created_at).await;
                         }
                         PoolRequest::Close => {
                             tracing::info!("Connection pool closing");
@@ -266,6 +266,8 @@ impl PoolManager {
                 }
                 _ = interval.tick() => {
                     self.evict_expired();
+                    // 破棄で min_idle を下回った場合は補充する。
+                    self.replenish_idle().await;
                 }
             }
         }
@@ -309,10 +311,18 @@ impl PoolManager {
     }
 
     /// 接続の返却を処理する。
-    fn handle_return(&mut self, conn: Box<Connection>, created_at: Instant) {
+    async fn handle_return(&mut self, mut conn: Box<Connection>, created_at: Instant) {
         self.active_count = self.active_count.saturating_sub(1);
 
         if !conn.is_open() {
+            return;
+        }
+
+        // commit / rollback されずに破棄されたトランザクションがあれば
+        // ロールバックしてからアイドルに戻す。
+        // ロールバックに失敗した場合は接続を破棄する。
+        if let Err(e) = conn.rollback_dirty_transaction().await {
+            tracing::debug!(error = %e, "Failed to roll back dirty transaction, dropping connection");
             return;
         }
 
@@ -329,6 +339,7 @@ impl PoolManager {
             match reply.try_send(Ok(conn)) {
                 Ok(()) => {
                     self.active_count += 1;
+                    self.replenish_idle().await;
                     return;
                 }
                 Err(err) => {
@@ -348,6 +359,33 @@ impl PoolManager {
             created_at,
             idle_since: Instant::now(),
         });
+        // アイドル数が min_idle を下回っている場合は補充する。
+        self.replenish_idle().await;
+    }
+
+    /// アイドル接続が min_idle を下回っている場合に補充する。
+    ///
+    /// 接続数の上限 (max_size) を超えない範囲で、min_idle まで
+    /// 新規接続を確立してアイドルに追加する。
+    /// 接続の確立に失敗した場合は中断する (次の機会に再試行する)。
+    async fn replenish_idle(&mut self) {
+        while self.idle.len() < self.config.min_idle
+            && self.active_count + self.idle.len() < self.config.max_size
+        {
+            match Connection::connect(self.options.clone()).await {
+                Ok(conn) => {
+                    self.idle.push(IdleConnection {
+                        conn,
+                        created_at: Instant::now(),
+                        idle_since: Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "Failed to replenish idle connection");
+                    break;
+                }
+            }
+        }
     }
 
     /// 期限切れのアイドル接続を破棄する。

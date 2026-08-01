@@ -6,9 +6,9 @@
 mod helpers;
 
 use helpers::parse_client_message;
-use shiguredo_postgres::constants::{auth, backend, frontend, oid};
-use shiguredo_postgres::error::Error;
-use shiguredo_postgres::protocol::{
+use shiguredo_postgres_core::constants::{auth, backend, frontend, oid};
+use shiguredo_postgres_core::error::Error;
+use shiguredo_postgres_core::protocol::{
     AuthenticationRequest, BackendKeyData, CommandComplete, DataRow, ErrorResponse,
     ParameterDescription, ParameterStatus, PostgresPacket, ReadyForQuery, RowDescription,
     bind_message, describe_message, execute_message, parse_message, password_message,
@@ -309,7 +309,7 @@ fn test_parse_messages_roundtrip() {
 
 #[test]
 fn test_ssl_request_message() {
-    let message = shiguredo_postgres::protocol::ssl_request_message();
+    let message = shiguredo_postgres_core::protocol::ssl_request_message();
     assert_eq!(message.len(), 8);
     let length = u32::from_be_bytes([message[0], message[1], message[2], message[3]]);
     assert_eq!(length, 8);

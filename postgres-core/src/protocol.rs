@@ -100,6 +100,65 @@ pub fn terminate_message() -> Vec<u8> {
     frontend_message(crate::constants::frontend::TERMINATE, &[])
 }
 
+/// キャンセル要求メッセージを組み立てる。
+///
+/// スタートアップメッセージと同様にタイプバイトを持たない。
+/// 進行中のクエリをキャンセルするために、別の TCP 接続から送信する。
+/// `process_id` と `secret_key` は BackendKeyData メッセージで受信した値を使う。
+pub fn cancel_request_message(process_id: u32, secret_key: u32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&crate::constants::CANCEL_REQUEST_CODE.to_be_bytes());
+    payload.extend_from_slice(&process_id.to_be_bytes());
+    payload.extend_from_slice(&secret_key.to_be_bytes());
+    let mut message = Vec::new();
+    let length = payload.len() as u32 + 4;
+    message.extend_from_slice(&length.to_be_bytes());
+    message.extend_from_slice(&payload);
+    message
+}
+
+/// クローズメッセージを組み立てる (拡張クエリプロトコル)。
+///
+/// `kind` はステートメント ('S') またはポータル ('P')。
+/// 名前付きステートメントの破棄に使う。
+pub fn close_message(kind: u8, name: &str) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.push(kind);
+    payload.extend_from_slice(name.as_bytes());
+    payload.push(0);
+    frontend_message(crate::constants::frontend::CLOSE, &payload)
+}
+
+/// フラッシュメッセージを組み立てる (拡張クエリプロトコル)。
+///
+/// サーバーに送信済みメッセージの処理を強制させる。
+pub fn flush_message() -> Vec<u8> {
+    frontend_message(crate::constants::frontend::FLUSH, &[])
+}
+
+/// Copy データメッセージを組み立てる (COPY プロトコル)。
+///
+/// CopyIn 中にサーバーへデータを送信するために使う。
+pub fn copy_data_message(data: &[u8]) -> Vec<u8> {
+    frontend_message(crate::constants::frontend::COPY_DATA, data)
+}
+
+/// Copy 完了メッセージを組み立てる (COPY プロトコル)。
+///
+/// CopyIn のデータ送信完了をサーバーに通知する。
+pub fn copy_done_message() -> Vec<u8> {
+    frontend_message(crate::constants::frontend::COPY_DONE, &[])
+}
+
+/// Copy 失敗メッセージを組み立てる (COPY プロトコル)。
+///
+/// CopyIn をエラーで中断するために使う。エラーメッセージは NUL 終端文字列。
+pub fn copy_fail_message(message: &str) -> Vec<u8> {
+    let mut payload = message.as_bytes().to_vec();
+    payload.push(0);
+    frontend_message(crate::constants::frontend::COPY_FAIL, &payload)
+}
+
 /// パースメッセージを組み立てる (拡張クエリプロトコル)。
 ///
 /// `parameter_types` が空の場合はサーバーに型推論を任せる。
@@ -409,6 +468,7 @@ impl ParameterDescription {
 ///
 /// フィールドの詳細は PostgreSQL ドキュメントの
 /// 「Error and Notice Message Fields」を参照。
+/// <https://www.postgresql.org/docs/current/protocol-error-fields.html>
 #[derive(Debug, Clone, Default)]
 pub struct ErrorResponse {
     pub severity: String,
@@ -417,10 +477,18 @@ pub struct ErrorResponse {
     pub message: String,
     pub detail: Option<String>,
     pub hint: Option<String>,
+    pub position: Option<String>,
+    pub internal_position: Option<String>,
+    pub internal_query: Option<String>,
+    pub context: Option<String>,
     pub schema: Option<String>,
     pub table: Option<String>,
     pub column: Option<String>,
+    pub data_type: Option<String>,
     pub constraint: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<String>,
+    pub routine: Option<String>,
 }
 
 impl ErrorResponse {
@@ -442,6 +510,7 @@ pub struct NoticeResponse {
     pub message: String,
     pub detail: Option<String>,
     pub hint: Option<String>,
+    pub context: Option<String>,
 }
 
 impl NoticeResponse {
@@ -456,6 +525,77 @@ impl NoticeResponse {
             message: response.message,
             detail: response.detail,
             hint: response.hint,
+            context: response.context,
+        })
+    }
+}
+
+/// 非同期通知メッセージ。
+///
+/// LISTEN 中のチャネルに NOTIFY が送られたときに受信する。
+#[derive(Debug, Clone)]
+pub struct NotificationResponse {
+    pub process_id: u32,
+    pub channel: String,
+    pub payload: String,
+}
+
+impl NotificationResponse {
+    /// 非同期通知メッセージを解析する。
+    pub fn parse(packet: &PostgresPacket) -> Result<Self> {
+        check_message_type(packet, backend::NOTIFICATION_RESPONSE)?;
+        let mut reader = Reader::new(&packet.data);
+        let process_id = reader.read_u32()?;
+        let channel = reader.read_cstring()?;
+        let payload = reader.read_cstring()?;
+        Ok(Self {
+            process_id,
+            channel,
+            payload,
+        })
+    }
+}
+
+/// Copy 応答メッセージ (CopyIn / CopyOut / CopyBoth 共通の形式)。
+///
+/// COPY プロトコルの開始をサーバーが受け付けたときに送られる。
+/// 全体の形式コード (0 はテキスト、1 はバイナリ) と、
+/// カラムごとの形式コードを持つ。
+#[derive(Debug, Clone)]
+pub struct CopyResponse {
+    pub overall_format: u8,
+    pub column_formats: Vec<u16>,
+}
+
+impl CopyResponse {
+    /// CopyIn 応答メッセージを解析する。
+    pub fn parse_in(packet: &PostgresPacket) -> Result<Self> {
+        Self::parse_common(packet, backend::COPY_IN_RESPONSE)
+    }
+
+    /// CopyOut 応答メッセージを解析する。
+    pub fn parse_out(packet: &PostgresPacket) -> Result<Self> {
+        Self::parse_common(packet, backend::COPY_OUT_RESPONSE)
+    }
+
+    /// CopyBoth 応答メッセージを解析する。
+    pub fn parse_both(packet: &PostgresPacket) -> Result<Self> {
+        Self::parse_common(packet, backend::COPY_BOTH_RESPONSE)
+    }
+
+    /// Copy 応答メッセージの共通解析処理。
+    fn parse_common(packet: &PostgresPacket, expected: u8) -> Result<Self> {
+        check_message_type(packet, expected)?;
+        let mut reader = Reader::new(&packet.data);
+        let overall_format = reader.read_u8()?;
+        let column_count = reader.read_u16()?;
+        let mut column_formats = Vec::new();
+        for _ in 0..column_count {
+            column_formats.push(reader.read_u16()?);
+        }
+        Ok(Self {
+            overall_format,
+            column_formats,
         })
     }
 }
@@ -479,10 +619,18 @@ fn parse_field_response(data: &[u8]) -> Result<ErrorResponse> {
             b'M' => response.message = content,
             b'D' => response.detail = Some(content),
             b'H' => response.hint = Some(content),
+            b'P' => response.position = Some(content),
+            b'p' => response.internal_position = Some(content),
+            b'q' => response.internal_query = Some(content),
+            b'W' => response.context = Some(content),
             b's' => response.schema = Some(content),
             b't' => response.table = Some(content),
             b'c' => response.column = Some(content),
+            b'd' => response.data_type = Some(content),
             b'n' => response.constraint = Some(content),
+            b'F' => response.file = Some(content),
+            b'L' => response.line = Some(content),
+            b'R' => response.routine = Some(content),
             _ => {}
         }
     }
@@ -492,23 +640,17 @@ fn parse_field_response(data: &[u8]) -> Result<ErrorResponse> {
 /// メッセージタイプが期待通りか確認する。
 fn check_message_type(packet: &PostgresPacket, expected: u8) -> Result<()> {
     if packet.message_type != expected {
-        return Err(Error::InternalError {
-            code: String::new(),
-            message: format!(
-                "Unexpected message type: got '{}' (0x{:02x}), expected '{}'",
-                packet.message_type as char, packet.message_type, expected as char
-            ),
-        });
+        return Err(Error::internal(format!(
+            "Unexpected message type: got '{}' (0x{:02x}), expected '{}'",
+            packet.message_type as char, packet.message_type, expected as char
+        )));
     }
     Ok(())
 }
 
 /// 不正なプロトコルデータを表すエラーを生成する。
 fn malformed(message: impl Into<String>) -> Error {
-    Error::InternalError {
-        code: String::new(),
-        message: message.into(),
-    }
+    Error::internal(message.into())
 }
 
 /// バイト列を読み進めるためのリーダー。

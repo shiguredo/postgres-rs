@@ -1,5 +1,5 @@
 [package]
-name = "shiguredo_tokio_postgres"
+name = "shiguredo_postgres"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,8 @@ rustls = {
 }
 # OS 標準の証明書検証（rustls-native-certs の代替）
 rustls-platform-verifier = "0.7"
-shiguredo_postgres = { path = ".." }
+# Sans I/O な PostgreSQL プロトコル実装
+shiguredo_postgres_core = { path = "../postgres-core" }
 # 非同期ランタイムおよび TCP/TLS ストリーム処理
 tokio = {
   version = "1.53",

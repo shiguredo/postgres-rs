@@ -8,9 +8,9 @@ use shiguredo_container::core::IntoContainerPort;
 use shiguredo_container::{
     AsyncRunner, ContainerAsync, ContainerRequest, GenericImage, ImageExt, WaitFor,
 };
-use shiguredo_postgres::connection::{ConnectOptions, SslMode};
-use shiguredo_tokio_postgres::connection::Connection;
-use shiguredo_tokio_postgres::pool::{Pool, PoolConfig};
+use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::pool::{Pool, PoolConfig};
+use shiguredo_postgres_core::connection::{ConnectOptions, SslMode};
 use std::time::Duration;
 
 /// tracing subscriber を一度だけ初期化する。
@@ -21,9 +21,17 @@ pub fn init_tracing() {
 /// テスト対象の PostgreSQL メジャーバージョン。
 ///
 /// 環境変数 `POSTGRES_VERSION` で指定する (デフォルトは 17)。
-/// CI では matrix で 18 / 17 / 16 を切り替えて実行する。
+/// CI では matrix で 19 / 18 / 17 / 16 を切り替えて実行する。
 pub fn postgres_version() -> String {
     std::env::var("POSTGRES_VERSION").unwrap_or_else(|_| "17".to_string())
+}
+
+/// PostgreSQL のメジャーバージョン番号を取り出す。
+///
+/// `19beta2` のようなタグから先頭の数字だけを取り出す。
+/// イメージ内のディレクトリ名 (`/usr/lib/postgresql/<major>/bin`) に使う。
+fn postgres_major(version: &str) -> String {
+    version.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
 /// PostgreSQL コンテナのイメージを組み立てる。
@@ -40,7 +48,7 @@ fn postgres_image(version: &str) -> ContainerRequest<GenericImage> {
             "PATH",
             format!(
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/{}/bin",
-                version
+                postgres_major(version)
             ),
         )
 }

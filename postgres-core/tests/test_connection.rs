@@ -16,10 +16,10 @@ use helpers::{
     parameter_description, parameter_status, parse_client_message, parse_complete, ready_for_query,
     row_description,
 };
-use shiguredo_postgres::connection::{AuthState, ConnectOptions, Connection, SslMode};
-use shiguredo_postgres::constants::{frontend, oid, transaction_status};
-use shiguredo_postgres::converters::Value;
-use shiguredo_postgres::error::Error;
+use shiguredo_postgres_core::connection::{AuthState, ConnectOptions, Connection, SslMode};
+use shiguredo_postgres_core::constants::{frontend, oid, transaction_status};
+use shiguredo_postgres_core::converters::Value;
+use shiguredo_postgres_core::error::Error;
 
 fn options() -> ConnectOptions {
     ConnectOptions {
@@ -294,7 +294,7 @@ fn test_authentication_scram_wrong_password() {
     .unwrap();
     assert!(matches!(
         conn.request_authentication_continue(),
-        Err(Error::ProgrammingError { ref code, .. }) if code == "28P01"
+        Err(e) if e.code() == Some("28P01")
     ));
 }
 
@@ -322,6 +322,121 @@ fn test_authentication_sasl_unsupported_mechanism() {
 
     // SCRAM-SHA-256 を含まないメカニズムリスト。
     conn.feed_bytes(&authentication_sasl(&["SCRAM-SHA-1", "PLAIN"]))
+        .unwrap();
+    assert!(matches!(
+        conn.request_authentication_continue(),
+        Err(Error::NotSupportedError { .. })
+    ));
+}
+
+#[test]
+fn test_authentication_oauth() {
+    // OAuth トークンを設定した接続は OAUTHBEARER で認証する。
+    let mut conn = Connection::connect(ConnectOptions {
+        oauth_token: Some("test-token".to_string()),
+        ..options()
+    })
+    .unwrap();
+    conn.request_authentication_start().unwrap();
+    conn.pop_send_queue();
+
+    // サーバーが OAUTHBEARER メカニズムを提供する。
+    conn.feed_bytes(&authentication_sasl(&["OAUTHBEARER"]))
+        .unwrap();
+    assert_eq!(
+        conn.request_authentication_continue().unwrap(),
+        AuthState::Send
+    );
+
+    // SASL 初期応答の形式を検証する。
+    let (message_type, payload) = pop_client_message(&mut conn);
+    assert_eq!(message_type, frontend::PASSWORD);
+    let mechanism_end = payload.iter().position(|&b| b == 0).unwrap();
+    assert_eq!(&payload[..mechanism_end], b"OAUTHBEARER");
+    let response_len = i32::from_be_bytes([
+        payload[mechanism_end + 1],
+        payload[mechanism_end + 2],
+        payload[mechanism_end + 3],
+        payload[mechanism_end + 4],
+    ]) as usize;
+    // RFC 7628 の初期応答: GS2 ヘッダー + kvsep + auth=Bearer <token> + kvsep。
+    // libpq と同じく host / port は含めない。
+    let initial =
+        std::str::from_utf8(&payload[mechanism_end + 5..mechanism_end + 5 + response_len]).unwrap();
+    assert_eq!(initial, "n,,\x01auth=Bearer test-token\x01\x01");
+
+    // サーバーは検証成功時に最終メッセージを送らず、
+    // 直接 AuthenticationOk と ReadyForQuery を送る。
+    conn.feed_bytes(&authentication_ok()).unwrap();
+    conn.feed_bytes(&ready_for_query(transaction_status::IDLE))
+        .unwrap();
+    assert_eq!(
+        conn.request_authentication_continue().unwrap(),
+        AuthState::NeedRead
+    );
+    assert_eq!(
+        conn.request_authentication_continue().unwrap(),
+        AuthState::Success
+    );
+}
+
+#[test]
+fn test_authentication_oauth_prefers_oauthbearer() {
+    // サーバーが SCRAM-SHA-256 と OAUTHBEARER の両方を提供し、
+    // OAuth トークンが設定されている場合は OAUTHBEARER を選ぶ (libpq と同じ)。
+    let mut conn = Connection::connect(ConnectOptions {
+        oauth_token: Some("test-token".to_string()),
+        ..options()
+    })
+    .unwrap();
+    conn.request_authentication_start().unwrap();
+    conn.pop_send_queue();
+
+    conn.feed_bytes(&authentication_sasl(&["SCRAM-SHA-256", "OAUTHBEARER"]))
+        .unwrap();
+    assert_eq!(
+        conn.request_authentication_continue().unwrap(),
+        AuthState::Send
+    );
+    let (_, payload) = pop_client_message(&mut conn);
+    let mechanism_end = payload.iter().position(|&b| b == 0).unwrap();
+    assert_eq!(&payload[..mechanism_end], b"OAUTHBEARER");
+}
+
+#[test]
+fn test_authentication_oauth_token_rejected() {
+    let mut conn = Connection::connect(ConnectOptions {
+        oauth_token: Some("invalid-token".to_string()),
+        ..options()
+    })
+    .unwrap();
+    conn.request_authentication_start().unwrap();
+    conn.pop_send_queue();
+
+    conn.feed_bytes(&authentication_sasl(&["OAUTHBEARER"]))
+        .unwrap();
+    conn.request_authentication_continue().unwrap();
+    pop_client_message(&mut conn);
+
+    // サーバーがトークン拒否を SASL 継続 (RFC 7628 の JSON エラー応答) で通知する。
+    let error_json = r#"{ "status": "invalid_token", "openid-configuration": "https://issuer.example.com/.well-known/openid-configuration", "scope": "openid" }"#;
+    conn.feed_bytes(&authentication_sasl_continue(error_json.as_bytes()))
+        .unwrap();
+    // 新しいトークンが必要なことを示す制御信号が返る。
+    assert!(matches!(
+        conn.request_authentication_continue(),
+        Err(Error::NeedOAuthToken)
+    ));
+}
+
+#[test]
+fn test_authentication_oauth_without_token() {
+    // トークンなしでサーバーが OAUTHBEARER のみ提供する場合は失敗する。
+    let mut conn = Connection::connect(options()).unwrap();
+    conn.request_authentication_start().unwrap();
+    conn.pop_send_queue();
+
+    conn.feed_bytes(&authentication_sasl(&["OAUTHBEARER"]))
         .unwrap();
     assert!(matches!(
         conn.request_authentication_continue(),
@@ -439,7 +554,7 @@ fn test_query_server_error() {
 
     assert!(matches!(
         conn.query("SELECT * FROM foo", false),
-        Err(Error::ProgrammingError { ref code, .. }) if code == "42P01"
+        Err(e) if e.code() == Some("42P01")
     ));
 
     // エラー後も次のクエリを実行できる (ReadyForQuery は読み飛ばされる)。
@@ -463,7 +578,7 @@ fn test_query_resume_after_error_cleanup() {
         .unwrap();
     assert!(matches!(
         conn.query("SELECT * FROM foo", false),
-        Err(Error::ProgrammingError { ref code, .. }) if code == "42P01"
+        Err(e) if e.code() == Some("42P01")
     ));
 
     // ReadyForQuery がまだ届いていない状態で次のクエリを実行すると
@@ -748,7 +863,7 @@ fn test_authentication_error_response() {
         .unwrap();
     assert!(matches!(
         conn.request_authentication_continue(),
-        Err(Error::ProgrammingError { ref code, .. }) if code == "28P01"
+        Err(e) if e.code() == Some("28P01")
     ));
 }
 

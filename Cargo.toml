@@ -1,15 +1,6 @@
-[package]
-name = "shiguredo_postgres"
-version = "0.0.0"
-edition.workspace = true
-rust-version.workspace = true
-readme = "README.md"
-repository.workspace = true
-license.workspace = true
-publish = false
-
 [workspace]
-members = ["tokio-postgres"]
+resolver = "3"
+members = ["postgres", "postgres-core"]
 
 [workspace.package]
 edition = "2024"
@@ -24,16 +15,3 @@ chrono = { version = "0.4", features = ["std"] }
 tracing = "0.1"
 # テスト時の tracing ログ出力
 tracing-subscriber = "0.3"
-
-[dependencies]
-# 暗号処理（SHA-256、HMAC、PBKDF2、定数時間比較、乱数）
-aws-lc-rs = "1.17"
-# SCRAM 認証の base64 エンコード・デコード
-base64ct = { version = "1.8", features = ["std"] }
-chrono = { workspace = true }
-# MD5 認証のハッシュ計算
-md-5 = "0.10"
-tracing = { workspace = true }
-
-[dev-dependencies]
-tracing-subscriber = { workspace = true }

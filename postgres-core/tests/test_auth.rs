@@ -9,8 +9,8 @@
 mod helpers;
 
 use helpers::ScramServer;
-use shiguredo_postgres::auth::ScramClient;
-use shiguredo_postgres::error::Error;
+use shiguredo_postgres_core::auth::ScramClient;
+use shiguredo_postgres_core::error::Error;
 
 #[test]
 fn test_client_first_message_format() {
@@ -139,15 +139,18 @@ fn test_scram_invalid_server_final() {
 
 #[test]
 fn test_md5_password_hash_format() {
-    let hash = shiguredo_postgres::auth::md5_password_hash("postgres", b"password", &[1, 2, 3, 4]);
+    let hash =
+        shiguredo_postgres_core::auth::md5_password_hash("postgres", b"password", &[1, 2, 3, 4]);
     // "md5" + 32 桁の 16 進数。
     assert_eq!(hash.len(), 35);
     assert!(hash.starts_with("md5"));
     assert!(hash[3..].chars().all(|c| c.is_ascii_hexdigit()));
     // 同一入力は同一ハッシュになる。
-    let hash2 = shiguredo_postgres::auth::md5_password_hash("postgres", b"password", &[1, 2, 3, 4]);
+    let hash2 =
+        shiguredo_postgres_core::auth::md5_password_hash("postgres", b"password", &[1, 2, 3, 4]);
     assert_eq!(hash, hash2);
     // ソルトが異なればハッシュも異なる。
-    let hash3 = shiguredo_postgres::auth::md5_password_hash("postgres", b"password", &[5, 6, 7, 8]);
+    let hash3 =
+        shiguredo_postgres_core::auth::md5_password_hash("postgres", b"password", &[5, 6, 7, 8]);
     assert_ne!(hash, hash3);
 }

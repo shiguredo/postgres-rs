@@ -50,10 +50,8 @@ impl ScramClient {
     /// base64 エンコードしたものを使う。
     pub fn new() -> Result<Self> {
         let mut raw_nonce = [0u8; 18];
-        rand::fill(&mut raw_nonce).map_err(|_| Error::InternalError {
-            code: String::new(),
-            message: "Failed to generate SCRAM client nonce".to_string(),
-        })?;
+        rand::fill(&mut raw_nonce)
+            .map_err(|_| Error::internal("Failed to generate SCRAM client nonce".to_string()))?;
         let client_nonce = Base64::encode_string(&raw_nonce);
         let client_first_bare = format!("n=,r={}", client_nonce);
         Ok(Self {
@@ -81,10 +79,9 @@ impl ScramClient {
 
         // サーバー nonce はクライアント nonce を先頭に含む必要がある (RFC 5802 5.1)。
         if !nonce.starts_with(&self.client_nonce) {
-            return Err(Error::InternalError {
-                code: String::new(),
-                message: "SCRAM server nonce does not start with client nonce".to_string(),
-            });
+            return Err(Error::internal(
+                "SCRAM server nonce does not start with client nonce".to_string(),
+            ));
         }
 
         let salted_password = derive_salted_password(password, &salt, iterations);
@@ -118,20 +115,13 @@ impl ScramClient {
     pub fn handle_server_final(&self, server_final: &str) -> Result<()> {
         let server_signature = parse_server_final(server_final)?;
         if server_signature.len() != 32 {
-            return Err(Error::InternalError {
-                code: String::new(),
-                message: format!(
-                    "SCRAM server signature length mismatch: expected 32, got {}",
-                    server_signature.len()
-                ),
-            });
+            return Err(Error::internal(format!(
+                "SCRAM server signature length mismatch: expected 32, got {}",
+                server_signature.len()
+            )));
         }
-        constant_time::verify_slices_are_equal(&server_signature, &self.server_signature).map_err(
-            |_| Error::InternalError {
-                code: String::new(),
-                message: "SCRAM server signature mismatch".to_string(),
-            },
-        )
+        constant_time::verify_slices_are_equal(&server_signature, &self.server_signature)
+            .map_err(|_| Error::internal("SCRAM server signature mismatch".to_string()))
     }
 }
 
@@ -143,60 +133,48 @@ fn parse_server_first(server_first: &str) -> Result<(String, Vec<u8>, u32)> {
     let mut salt = None;
     let mut iterations = None;
     for attr in server_first.split(',') {
-        let (key, value) = attr.split_once('=').ok_or_else(|| Error::InternalError {
-            code: String::new(),
-            message: format!("Invalid SCRAM server-first attribute: {}", attr),
+        let (key, value) = attr.split_once('=').ok_or_else(|| {
+            Error::internal(format!("Invalid SCRAM server-first attribute: {}", attr))
         })?;
         match key {
             "r" => nonce = Some(value.to_string()),
             "s" => {
-                let decoded = Base64::decode_vec(value).map_err(|_| Error::InternalError {
-                    code: String::new(),
-                    message: format!("Invalid SCRAM salt base64: {}", value),
+                let decoded = Base64::decode_vec(value).map_err(|_| {
+                    Error::internal(format!("Invalid SCRAM salt base64: {}", value))
                 })?;
                 salt = Some(decoded);
             }
             "i" => {
-                let parsed: u32 = value.parse().map_err(|_| Error::InternalError {
-                    code: String::new(),
-                    message: format!("Invalid SCRAM iteration count: {}", value),
+                let parsed: u32 = value.parse().map_err(|_| {
+                    Error::internal(format!("Invalid SCRAM iteration count: {}", value))
                 })?;
                 iterations = Some(parsed);
             }
             _ => {
-                return Err(Error::InternalError {
-                    code: String::new(),
-                    message: format!("Unknown SCRAM server-first attribute: {}", key),
-                });
+                return Err(Error::internal(format!(
+                    "Unknown SCRAM server-first attribute: {}",
+                    key
+                )));
             }
         }
     }
-    let nonce = nonce.ok_or_else(|| Error::InternalError {
-        code: String::new(),
-        message: "SCRAM server-first is missing nonce".to_string(),
-    })?;
-    let salt = salt.ok_or_else(|| Error::InternalError {
-        code: String::new(),
-        message: "SCRAM server-first is missing salt".to_string(),
-    })?;
-    let iterations = iterations.ok_or_else(|| Error::InternalError {
-        code: String::new(),
-        message: "SCRAM server-first is missing iteration count".to_string(),
+    let nonce =
+        nonce.ok_or_else(|| Error::internal("SCRAM server-first is missing nonce".to_string()))?;
+    let salt =
+        salt.ok_or_else(|| Error::internal("SCRAM server-first is missing salt".to_string()))?;
+    let iterations = iterations.ok_or_else(|| {
+        Error::internal("SCRAM server-first is missing iteration count".to_string())
     })?;
     if iterations == 0 {
-        return Err(Error::InternalError {
-            code: String::new(),
-            message: "SCRAM iteration count must be greater than 0".to_string(),
-        });
+        return Err(Error::internal(
+            "SCRAM iteration count must be greater than 0".to_string(),
+        ));
     }
     if iterations > MAX_SCRAM_ITERATIONS {
-        return Err(Error::InternalError {
-            code: String::new(),
-            message: format!(
-                "SCRAM iteration count too large: {} (max {})",
-                iterations, MAX_SCRAM_ITERATIONS
-            ),
-        });
+        return Err(Error::internal(format!(
+            "SCRAM iteration count too large: {} (max {})",
+            iterations, MAX_SCRAM_ITERATIONS
+        )));
     }
     Ok((nonce, salt, iterations))
 }
@@ -205,22 +183,20 @@ fn parse_server_first(server_first: &str) -> Result<(String, Vec<u8>, u32)> {
 ///
 /// 形式: `v=<base64 server signature>`
 fn parse_server_final(server_final: &str) -> Result<Vec<u8>> {
-    let (key, value) = server_final
-        .split_once('=')
-        .ok_or_else(|| Error::InternalError {
-            code: String::new(),
-            message: format!("Invalid SCRAM server-final message: {}", server_final),
-        })?;
+    let (key, value) = server_final.split_once('=').ok_or_else(|| {
+        Error::internal(format!(
+            "Invalid SCRAM server-final message: {}",
+            server_final
+        ))
+    })?;
     if key != "v" {
-        return Err(Error::InternalError {
-            code: String::new(),
-            message: format!("Unexpected SCRAM server-final attribute: {}", key),
-        });
+        return Err(Error::internal(format!(
+            "Unexpected SCRAM server-final attribute: {}",
+            key
+        )));
     }
-    Base64::decode_vec(value).map_err(|_| Error::InternalError {
-        code: String::new(),
-        message: format!("Invalid SCRAM server signature base64: {}", value),
-    })
+    Base64::decode_vec(value)
+        .map_err(|_| Error::internal(format!("Invalid SCRAM server signature base64: {}", value)))
 }
 
 /// SaltedPassword = PBKDF2-HMAC-SHA256(password, salt, iterations, 32) を計算する。
