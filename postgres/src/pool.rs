@@ -7,9 +7,8 @@
 //! mpsc チャネル経由で貸出・返却を行う。
 //! Mutex / RwLock は使用しない。
 
-use crate::connection::Connection;
-use shiguredo_postgres_core::connection::ConnectOptions;
-use shiguredo_postgres_core::error::{Error, Result};
+use crate::connection::{ConnectOptions, Connection};
+use crate::error::{Error, Result};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;

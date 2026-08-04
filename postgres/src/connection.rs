@@ -3,21 +3,25 @@
 
 //! PostgreSQL 接続の tokio I/O 実装。
 //!
-//! `shiguredo_postgres_core::Connection` の sans I/O な状態機械に対し、
-//! TCP/TLS/Unix ドメインソケット接続、タイムアウト、読み書きを行う。
+//! sans I/O な状態機械 (内部実装) に対し、TCP/TLS/Unix ドメインソケット
+//! 接続、タイムアウト、読み書きを行う。
 
 use crate::batch::Batch;
+use crate::converters::Value;
+use crate::error::{Error, Result};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime, pem::PemObject};
 use rustls::{DigitallySignedStruct, Error as RustlsError};
 use rustls_platform_verifier::{BuilderVerifierExt, Verifier};
-use shiguredo_postgres_core::connection::{
-    AuthState, ConnectOptions, Connection as InnerConnection, Notification, PreparedStatement,
-    QueryResult, SslMode,
+use shiguredo_postgres_core::connection::{AuthState, Connection as InnerConnection};
+
+// 以下は sans I/O 実装 (shiguredo_postgres_core) から再エクスポートした型。
+// 利用者は shiguredo_postgres クレートだけに依存すればよい。
+// ドキュメントは sans I/O 実装側のものが引き継がれる。
+pub use shiguredo_postgres_core::connection::{
+    ConnectOptions, Notification, PreparedStatement, QueryResult, SslMode,
 };
-use shiguredo_postgres_core::converters::Value;
-use shiguredo_postgres_core::error::{Error, Result};
 use std::collections::HashMap;
 use std::io;
 use std::str::FromStr;
@@ -717,7 +721,7 @@ impl Connection {
     /// 受信した NOTICE を一つ取り出す。
     ///
     /// クエリ実行中にサーバーが送ってきた NOTICE (警告等) を取得する。
-    pub fn pop_notice(&mut self) -> Option<shiguredo_postgres_core::protocol::NoticeResponse> {
+    pub fn pop_notice(&mut self) -> Option<crate::protocol::NoticeResponse> {
         self.inner.pop_notice()
     }
 
@@ -821,7 +825,7 @@ impl Connection {
     /// 別接続でキャンセル要求を送信する。
     async fn send_cancel_request(&mut self) -> Result<()> {
         let options = self.inner.options().clone();
-        let message = shiguredo_postgres_core::protocol::cancel_request_message(
+        let message = crate::protocol::cancel_request_message(
             self.inner.backend_process_id(),
             self.inner.backend_secret_key(),
         );
@@ -893,11 +897,7 @@ impl Connection {
     /// 型 OID に対応するデコーダを登録する。
     ///
     /// 登録したデコーダは組み込みのデコーダより優先される。
-    pub fn register_converter(
-        &mut self,
-        type_oid: u32,
-        converter: shiguredo_postgres_core::converters::Converter,
-    ) {
+    pub fn register_converter(&mut self, type_oid: u32, converter: crate::converters::Converter) {
         self.inner.register_converter(type_oid, converter);
     }
 

@@ -8,9 +8,8 @@ use shiguredo_container::core::IntoContainerPort;
 use shiguredo_container::{
     AsyncRunner, ContainerAsync, ContainerRequest, GenericImage, ImageExt, WaitFor,
 };
-use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::connection::{ConnectOptions, Connection, SslMode};
 use shiguredo_postgres::pool::{Pool, PoolConfig};
-use shiguredo_postgres_core::connection::{ConnectOptions, SslMode};
 use std::time::Duration;
 
 /// tracing subscriber を一度だけ初期化する。

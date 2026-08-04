@@ -6,7 +6,7 @@
 //! 複数のステートメントをまとめて 1 往復で送信するために使う。
 //! 実行は `Connection::batch_execute` で行う。
 
-use shiguredo_postgres_core::converters::Value;
+use crate::converters::Value;
 
 /// バッチクエリ。
 #[derive(Debug, Clone, Default)]

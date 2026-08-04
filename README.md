@@ -14,7 +14,7 @@
 `postgres-rs` は PostgreSQL クライアントの Rust 実装です。
 
 - `shiguredo_postgres` - tokio 上で動作する非同期 PostgreSQL クライアント
-- `shiguredo_postgres_core` - Sans I/O な PostgreSQL プロトコル実装
+- `shiguredo_postgres_core` - Sans I/O な PostgreSQL プロトコル実装 (内部実装。利用者は `shiguredo_postgres` だけに依存すればよい)
 
 主な機能:
 
@@ -38,9 +38,8 @@
 ### 単一接続
 
 ```rust
-use shiguredo_postgres_core::connection::{ConnectOptions, SslMode};
-use shiguredo_postgres_core::converters::Value;
-use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::connection::{ConnectOptions, Connection, SslMode};
+use shiguredo_postgres::converters::Value;
 use shiguredo_postgres::cursor::Cursor;
 
 #[tokio::main]
@@ -95,8 +94,8 @@ let options = ConnectOptions::from_url(
 明示的に準備して実行することもできます。
 
 ```rust
-use shiguredo_postgres_core::converters::Value;
 use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::converters::Value;
 
 #[tokio::main]
 async fn main() {
@@ -122,8 +121,8 @@ async fn main() {
 ### トランザクション
 
 ```rust
-use shiguredo_postgres_core::converters::Value;
 use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::converters::Value;
 
 #[tokio::main]
 async fn main() {
@@ -159,9 +158,9 @@ async fn main() {
 複数のステートメントを 1 往復で送信します。
 
 ```rust
-use shiguredo_postgres_core::converters::Value;
 use shiguredo_postgres::batch::Batch;
 use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::converters::Value;
 
 #[tokio::main]
 async fn main() {
@@ -237,8 +236,8 @@ async fn main() {
 接続を正常な状態に戻した上でエラーを返します。
 
 ```rust
-use shiguredo_postgres_core::converters::Value;
 use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::converters::Value;
 use std::time::Duration;
 
 #[tokio::main]
@@ -268,8 +267,7 @@ PostgreSQL 18 以降の OAuth 認証 (pg_hba.conf の `oauth` メソッド) に�
 取得して接続をやり直します (最大 3 回)。
 
 ```rust
-use shiguredo_postgres_core::connection::ConnectOptions;
-use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::connection::{ConnectOptions, Connection};
 
 #[tokio::main]
 async fn main() {
@@ -302,8 +300,7 @@ libpq の libpq-oauth のようなトークン取得フローは実装してい�
 ### 非同期並列クエリ
 
 ```rust
-use shiguredo_postgres_core::connection::ConnectOptions;
-use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::connection::{ConnectOptions, Connection};
 use shiguredo_postgres::cursor::Cursor;
 
 #[tokio::main]
@@ -343,8 +340,7 @@ async fn main() {
 ### コネクションプール
 
 ```rust
-use shiguredo_postgres_core::connection::ConnectOptions;
-use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::connection::{ConnectOptions, Connection};
 use shiguredo_postgres::cursor::Cursor;
 use shiguredo_postgres::pool::{Pool, PoolConfig};
 use std::time::Duration;

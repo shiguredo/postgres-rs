@@ -11,10 +11,10 @@
 mod helpers;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use shiguredo_postgres::converters::Value;
 use shiguredo_postgres::cursor::{Cursor, DictCursor};
+use shiguredo_postgres::error::Error;
 use shiguredo_postgres::pool::PoolConfig;
-use shiguredo_postgres_core::converters::Value;
-use shiguredo_postgres_core::error::Error;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -587,7 +587,7 @@ async fn test_transaction_status() {
     let (options, _node) = helpers::build_postgres_options().await;
     let mut conn = helpers::connect(&options).await;
 
-    use shiguredo_postgres_core::constants::transaction_status;
+    use shiguredo_postgres::constants::transaction_status;
     assert_eq!(
         conn.transaction_status(),
         transaction_status::IDLE,

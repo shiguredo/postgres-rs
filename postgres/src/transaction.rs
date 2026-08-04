@@ -11,9 +11,9 @@
 //! 次の `begin()` 時またはプールへの返却時にロールバックされる。
 
 use crate::connection::Connection;
-use shiguredo_postgres_core::constants::transaction_status;
-use shiguredo_postgres_core::converters::Value;
-use shiguredo_postgres_core::error::{Error, Result};
+use crate::constants::transaction_status;
+use crate::converters::Value;
+use crate::error::{Error, Result};
 
 /// トランザクションの分離レベル。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

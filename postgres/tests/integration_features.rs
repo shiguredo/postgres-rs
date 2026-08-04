@@ -11,11 +11,11 @@ mod helpers;
 use chrono::NaiveDate;
 use shiguredo_postgres::batch::Batch;
 use shiguredo_postgres::connection::Connection;
+use shiguredo_postgres::constants::oid;
+use shiguredo_postgres::converters::Value;
 use shiguredo_postgres::cursor::Cursor;
 use shiguredo_postgres::pool::PoolConfig;
 use shiguredo_postgres::transaction::{IsolationLevel, TxOptions};
-use shiguredo_postgres_core::constants::oid;
-use shiguredo_postgres_core::converters::Value;
 use std::time::Duration;
 
 /// サーバー上のプリペアドステートメントの数を確認する。
