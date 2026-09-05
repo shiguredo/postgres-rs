@@ -9,20 +9,13 @@ publish = false
 
 [dependencies]
 # TLS 設定および rustls crypto provider 切り替え
-rustls = {
-  version = "0.23",
-  default-features = false,
-  features = ["aws_lc_rs", "tls12"]
-}
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "tls12"] }
 # OS 標準の証明書検証（rustls-native-certs の代替）
 rustls-platform-verifier = "0.7"
 # Sans I/O な PostgreSQL プロトコル実装
 shiguredo_postgres_core = { path = "../postgres-core" }
 # 非同期ランタイムおよび TCP/TLS ストリーム処理
-tokio = {
-  version = "1.53",
-  features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"]
-}
+tokio = { version = "1.53", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 # TLS 接続（tokio 上で rustls を動作させる）
 tokio-rustls = { version = "0.26", default-features = false }
 tracing = { workspace = true }
