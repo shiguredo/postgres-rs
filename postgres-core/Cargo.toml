@@ -14,7 +14,7 @@ aws-lc-rs = { workspace = true }
 base64ct = { workspace = true }
 chrono = { workspace = true }
 # MD5 認証のハッシュ計算
-md-5 = "0.10"
+md-5 = "0.11"
 tracing = { workspace = true }
 
 [dev-dependencies]

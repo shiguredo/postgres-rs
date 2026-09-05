@@ -11,7 +11,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # 暗号処理（SHA-256、HMAC、PBKDF2、定数時間比較、乱数）
-aws-lc-rs = "1.17"
+aws-lc-rs = "1.18"
 # SCRAM 認証の base64 エンコード・デコード
 base64ct = { version = "1.8", features = ["std"] }
 # 日付・時刻型

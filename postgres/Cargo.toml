@@ -30,5 +30,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 chrono = { workspace = true }
 # コンテナベースの統合テスト（macOS は Apple Container、Linux は Docker Engine API）
-shiguredo_container = "2026.1.0-canary.5"
+shiguredo_container = "2026.1.0"
 tracing-subscriber = { workspace = true }
