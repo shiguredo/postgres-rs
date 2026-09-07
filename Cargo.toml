@@ -17,7 +17,7 @@ base64ct = { version = "1.8", features = ["std"] }
 # 日付・時刻型
 chrono = { version = "0.4", features = ["std"] }
 # PBT (Property-Based Testing)
-proptest = "1.11"
+noprop = "0.2"
 # ログ出力
 tracing = "0.1"
 # テスト時の tracing ログ出力
