@@ -74,6 +74,7 @@ pub struct ConnectOptions {
     /// 接続確立時に指定する。`user`、`database`、`application_name`、
     /// `client_encoding`、`DateStyle`、`options`、`replication` は
     /// 専用の設定か固定値があるため指定できない。
+    /// `_pq_.` で始まる名前はプロトコル拡張のために予約されているため指定できない。
     /// 名前は重複を許さず、大文字と小文字を区別しない。
     pub runtime_params: Vec<(String, String)>,
     /// 受信を許可する 1 メッセージの最大サイズ (バイト)。
@@ -136,6 +137,7 @@ impl ConnectOptions {
     /// 起動時に送る追加パラメーターを検証する。
     ///
     /// 名前は空でなく、専用の設定や固定値を持つキーと重複してはならない。
+    /// プロトコル拡張のために予約された `_pq_.` で始まる名前も受け付けない。
     /// 同じ名前が複数回指定された場合もエラーにする。
     fn validate_runtime_params(&self) -> Result<()> {
         const RESERVED: [&str; 7] = [
@@ -151,6 +153,18 @@ impl ConnectOptions {
         for (name, _) in &self.runtime_params {
             if name.is_empty() {
                 return Err(Error::interface("Runtime parameter name must not be empty"));
+            }
+            // PostgreSQL 19 公式文書 §53.1.5 Protocol Extensions のとおり、`_pq_.` で始まる
+            // 名前は起動パラメーターではなくプロトコル拡張の要求になる。サーバーは未対応の拡張を
+            // NegotiateProtocolVersion で拒否するが、この実装は拡張を要求しないため、その応答を
+            // 受け付けない。判定は src/backend/tcop/backend_startup.c の ProcessStartupPacket と
+            // 同じく、大文字と小文字を区別する前方一致にする。
+            // 将来の版で拡張が定義された場合は、ここを見直す。
+            if name.starts_with("_pq_.") {
+                return Err(Error::interface(format!(
+                    "Runtime parameter `{}` is reserved for protocol extensions",
+                    name
+                )));
             }
             let normalized = name.to_ascii_lowercase();
             if RESERVED.contains(&normalized.as_str()) {
@@ -2537,6 +2551,32 @@ mod tests {
         assert!(
             reserved.validate_runtime_params().is_err(),
             "予約名が受理されました"
+        );
+
+        // `_pq_.` で始まる名前はプロトコル拡張の要求になるため拒否する。
+        let protocol_extension = ConnectOptions {
+            runtime_params: vec![(
+                "_pq_.test_protocol_negotiation".to_string(),
+                "x".to_string(),
+            )],
+            ..Default::default()
+        };
+        let error = protocol_extension
+            .validate_runtime_params()
+            .expect_err("プロトコル拡張の名前が受理されました");
+        assert_eq!(
+            error.message(),
+            "Runtime parameter `_pq_.test_protocol_negotiation` is reserved for protocol extensions",
+            "プロトコル拡張を拒否したエラーが返りませんでした"
+        );
+        // サーバーと同じく大文字と小文字を区別するため、`_PQ_.` は通常の設定として送る。
+        let uppercase_prefix = ConnectOptions {
+            runtime_params: vec![("_PQ_.custom".to_string(), "x".to_string())],
+            ..Default::default()
+        };
+        assert!(
+            uppercase_prefix.validate_runtime_params().is_ok(),
+            "プロトコル拡張ではない名前が拒否されました"
         );
 
         let duplicate = ConnectOptions {
