@@ -49,6 +49,53 @@ async fn test_runtime_params_are_sent_in_startup() {
     );
 }
 
+/// options の `-c` 指定が反映され、固定の client_encoding と DateStyle は変わらないことを確認する。
+#[tokio::test]
+async fn test_options_are_applied_before_runtime_params() {
+    helpers::init_tracing();
+    let (mut options, _node) = helpers::build_postgres_options().await;
+    // サーバーは options を起動パラメーターより先に処理するため、search_path は
+    // runtime_params の値が残り、client_encoding と DateStyle は固定値が残る。
+    options.options = Some(
+        "-c search_path=public -c statement_timeout=4321ms -c client_encoding=LATIN1 -c DateStyle=German"
+            .to_string(),
+    );
+    options.runtime_params = vec![("search_path".to_string(), "pg_catalog".to_string())];
+    let mut conn = helpers::connect(&options).await;
+
+    let row = conn
+        .query_one(
+            "SELECT current_setting('search_path'), current_setting('statement_timeout'), \
+             current_setting('client_encoding'), current_setting('DateStyle')",
+            &[],
+        )
+        .await
+        .expect("設定値の取得に失敗しました");
+    assert_eq!(
+        row.get::<String>(0).expect("search_path を取得できません"),
+        "pg_catalog",
+        "search_path に runtime_params の値が残っていません"
+    );
+    assert_eq!(
+        row.get::<String>(1)
+            .expect("statement_timeout を取得できません"),
+        "4321ms",
+        "statement_timeout に options の値が反映されていません"
+    );
+    assert_eq!(
+        row.get::<String>(2)
+            .expect("client_encoding を取得できません"),
+        "UTF8",
+        "client_encoding が固定値から変わっています"
+    );
+    // German が日付の順序を DMY にした後で ISO を適用するため、出力形式だけが ISO に戻る。
+    let date_style = row.get::<String>(3).expect("DateStyle を取得できません");
+    assert!(
+        date_style.starts_with("ISO,"),
+        "DateStyle の出力形式が ISO ではありません: {date_style}"
+    );
+}
+
 /// 予約済みの起動パラメーターが接続の確立前に拒否されることを確認する。
 #[tokio::test]
 async fn test_reserved_runtime_param_is_rejected() {

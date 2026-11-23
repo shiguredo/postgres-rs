@@ -63,6 +63,7 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
   - 別タスクからのキャンセル (`CancelToken`)
 - 接続設定
   - 起動パラメーター (`search_path` 等)
+  - 起動時のコマンドラインオプション (`options`。接続文字列と URL でも指定できる)
   - TCP キープアライブ (既定で有効) と `tcp_user_timeout`
 - 認証
   - SCRAM-SHA-256

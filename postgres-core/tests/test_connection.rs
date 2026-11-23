@@ -133,6 +133,81 @@ fn test_authentication_success() {
     connect_authenticated();
 }
 
+/// スタートアップメッセージから (名前, 値) の並びを取り出す。
+fn startup_parameters(message: &[u8]) -> Vec<(String, String)> {
+    // 長さ 4 バイトとプロトコルバージョン 4 バイトの後に、NUL 終端の名前と値が交互に並ぶ。
+    let mut fields = message[8..].split(|byte| *byte == 0).map(|field| {
+        String::from_utf8(field.to_vec()).expect("起動パラメーターが UTF-8 ではありません")
+    });
+    let mut parameters = Vec::new();
+    while let Some(name) = fields.next().filter(|name| !name.is_empty()) {
+        let value = fields.next().expect("起動パラメーターの値がありません");
+        parameters.push((name, value));
+    }
+    parameters
+}
+
+/// 平文のローカル接続でスタートアップメッセージを組み立て、その起動パラメーターを返す。
+fn sent_startup_parameters(options: ConnectOptions) -> Vec<(String, String)> {
+    let mut conn = Connection::connect(options).expect("接続の作成に成功しました");
+    assert_eq!(
+        conn.request_authentication_start()
+            .expect("認証を開始できませんでした"),
+        AuthState::Send
+    );
+    let message = conn.pop_send_queue().expect("StartupMessage がありません");
+    startup_parameters(&message)
+}
+
+/// options はそのまま送り、固定の client_encoding と DateStyle より前に置くことを確認する。
+#[test]
+fn test_startup_message_options() {
+    let parameters = sent_startup_parameters(ConnectOptions {
+        options: Some("-c search_path=app -c client_encoding=LATIN1".to_string()),
+        runtime_params: vec![("statement_timeout".to_string(), "5s".to_string())],
+        ..options()
+    });
+    let names: Vec<&str> = parameters.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "user",
+            "database",
+            "options",
+            "statement_timeout",
+            "client_encoding",
+            "DateStyle"
+        ],
+        "起動パラメーターの並びが異なります"
+    );
+    assert_eq!(
+        parameters[2].1, "-c search_path=app -c client_encoding=LATIN1",
+        "options の値が変わっています"
+    );
+
+    // libpq と同じく、空の options は送らない。
+    let parameters = sent_startup_parameters(ConnectOptions {
+        options: Some(String::new()),
+        ..options()
+    });
+    assert!(
+        parameters.iter().all(|(name, _)| name != "options"),
+        "空の options を送りました"
+    );
+
+    // NUL を含む options はサーバーへ接続する前に拒否する。
+    let error = Connection::connect(ConnectOptions {
+        options: Some("-c search_path=a\0b".to_string()),
+        ..options()
+    })
+    .err()
+    .expect("NUL を含む options を受理しました");
+    assert_eq!(
+        error.message(),
+        "Connection settings must not contain NUL bytes"
+    );
+}
+
 #[test]
 fn test_authentication_empty_user() {
     let options = ConnectOptions {

@@ -100,6 +100,14 @@ impl Connection {
         if let Some(application_name) = &self.options.application_name {
             parameters.push(("application_name", application_name.as_str()));
         }
+        // PostgreSQL 19 文書 §31.1.2 Parameter Key Words の options と同じく、値はそのまま送り、
+        // 空文字列は送らない (src/interfaces/libpq/fe-protocol3.c の build_startup_packet)。
+        // サーバーは src/backend/utils/init/postinit.c の process_startup_options で options を
+        // ほかの起動パラメーターより先に処理するため、後に置く固定の client_encoding と DateStyle が
+        // options の `-c` 指定より優先される。将来この処理順が変わった場合はここを見直す。
+        if let Some(command_line) = self.options.options.as_deref().filter(|v| !v.is_empty()) {
+            parameters.push(("options", command_line));
+        }
         // 追加の GUC は固定値より前に置き、同名の指定を検証で弾いておく。
         for (name, value) in &self.options.runtime_params {
             parameters.push((name.as_str(), value.as_str()));

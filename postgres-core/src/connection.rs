@@ -94,6 +94,14 @@ pub struct ConnectOptions {
     /// `Connection::connect_with_oauth` を使うと、トークンが拒否された
     /// ときにトークンプロバイダから新しいトークンを取得して再接続する。
     pub oauth_token: Option<String>,
+    /// 起動時にサーバーへ送るコマンドラインオプション (libpq の `options`)。
+    ///
+    /// `-c search_path=app -c statement_timeout=5s` のように、サーバーの設定を
+    /// `-c 名前=値` の形で並べる。値はそのままサーバーへ送り、空文字列は送らない。
+    /// サーバーはこの値を [`ConnectOptions::runtime_params`] より先に処理するため、
+    /// 同じ設定を両方で指定した場合は `runtime_params` の値が残る。
+    /// `client_encoding` と `DateStyle` は固定値を送るため、ここで変えても反映されない。
+    pub options: Option<String>,
     /// 起動時にサーバーへ送る追加のパラメーター。
     ///
     /// `search_path`、`statement_timeout`、`TimeZone` などの設定を
@@ -140,6 +148,7 @@ impl Default for ConnectOptions {
             password: Vec::new(),
             database: None,
             application_name: None,
+            options: None,
             connect_timeout: Duration::from_secs(10),
             ssl_mode: SslMode::VerifyFull,
             keepalives: true,
@@ -284,8 +293,9 @@ impl ConnectOptions {
     /// `keepalives_interval` (秒) / `keepalives_count` / `tcp_user_timeout` (ミリ秒)。
     /// キープアライブの調整値と `tcp_user_timeout` の 0 は OS の既定値を表す。
     /// 未対応のキーは黙って無視せずエラーにする。
+    /// `options` (起動時のコマンドラインオプション) も指定できる。
     /// 追加の起動パラメーター ([`ConnectOptions::runtime_params`]) は
-    /// 接続文字列では指定できない。API から設定する。
+    /// 接続文字列では指定できない。API から設定するか、`options` に `-c` で指定する。
     pub fn from_conninfo(conninfo: &str) -> Result<Self> {
         let mut options = Self::default();
         for (key, value) in parse_conninfo(conninfo)? {
@@ -367,6 +377,7 @@ impl ConnectOptions {
             "user" => self.user = value,
             "password" => self.password = value.into_bytes(),
             "application_name" => self.application_name = Some(value),
+            "options" => self.options = Some(value),
             "connect_timeout" => {
                 let seconds: u64 = value.parse().map_err(|_| {
                     Error::interface(format!("Invalid connect_timeout in {}", source.name()))
@@ -1036,6 +1047,7 @@ impl Connection {
             Some(options.user.as_str()),
             options.database.as_deref(),
             options.application_name.as_deref(),
+            options.options.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -2853,6 +2865,25 @@ mod tests {
         assert!(ConnectOptions::from_url("postgres://host:abc/db").is_err());
         // 不正なパーセントエンコーディング。
         assert!(ConnectOptions::from_url("postgres://%zz@host/db").is_err());
+    }
+
+    /// options を接続文字列と URL から読めることを確認する。
+    #[test]
+    fn test_options_from_connection_string() {
+        let conninfo =
+            ConnectOptions::from_conninfo("host=db options='-c search_path=app -c geqo=off'")
+                .expect("options を含む接続文字列を読めません");
+        let url = ConnectOptions::from_url(
+            "postgres://db?options=-c%20search_path%3Dapp%20-c%20geqo%3Doff",
+        )
+        .expect("options を含む URL を読めません");
+        for options in [conninfo, url] {
+            assert_eq!(
+                options.options.as_deref(),
+                Some("-c search_path=app -c geqo=off")
+            );
+        }
+        assert_eq!(ConnectOptions::default().options, None);
     }
 
     /// キープアライブと tcp_user_timeout のキーを libpq と同じ単位で解釈することを確認する。
