@@ -94,6 +94,20 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
 
 対応しない機能とその理由は [意図的に実装しない機能](docs/unsupported-features.md) を参照してください。
 
+## インストール
+
+crates.io には公開していません。GitHub のリポジトリを git 依存で指定し、`tag` には [Releases](https://github.com/shiguredo/postgres-rs/releases) のタグを指定してください。
+
+```toml
+[dependencies]
+shiguredo_postgres = { git = "https://github.com/shiguredo/postgres-rs", tag = "<リリースのタグ>" }
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread"] }
+```
+
+- Rust 1.95 以降が必要です
+- 以下の例の `#[tokio::main]` は、tokio の `macros` と `rt-multi-thread` を使います
+- TLS と暗号処理には rustls と aws-lc-rs を使うため、OpenSSL は不要です
+
 ## 使い方
 
 ### 単一接続
@@ -137,6 +151,8 @@ async fn main() {
 }
 ```
 
+### 接続文字列
+
 接続文字列 (libpq 形式) や URL から接続することもできます。
 
 ```rust
@@ -150,6 +166,27 @@ let options = ConnectOptions::from_url(
 )
 .expect("接続文字列の解析に失敗しました");
 ```
+
+URL ではクエリ文字列に同じキーを指定します。未対応のキーは無視せずエラーにします。
+
+| キー | 内容 |
+| --- | --- |
+| `host` | ホスト名、IP アドレス、または Unix ドメインソケットのディレクトリ (`/` で始まる) |
+| `port` | ポート番号。既定は 5432 |
+| `dbname` / `database` | データベース名 |
+| `user` / `password` | ユーザー名とパスワード |
+| `application_name` | サーバーに通知するアプリケーション名 |
+| `options` | 起動時のコマンドラインオプション (`-c search_path=app` など) |
+| `connect_timeout` | 接続確立のタイムアウト (秒)。既定は 10 |
+| `sslmode` | `verify-full` (既定) / `verify-ca` / `require` / `disable` |
+| `sslrootcert` / `sslcert` / `sslkey` | CA 証明書、クライアント証明書、クライアント秘密鍵のファイルパス |
+| `sslsni` | SNI を送るか (`1` は送る、`0` は送らない)。既定は `1` |
+| `ssl_min_protocol_version` / `ssl_max_protocol_version` | `TLSv1.2` / `TLSv1.3`。既定の最小は `TLSv1.2` |
+| `keepalives` | TCP キープアライブを使うか (`0` は使わない)。既定は使う |
+| `keepalives_idle` / `keepalives_interval` | キープアライブの無通信時間と再送間隔 (秒)。`0` は OS の既定値 |
+| `keepalives_count` | 切断と判断するまでに失ってよいキープアライブの数。`0` は OS の既定値 |
+| `tcp_user_timeout` | 送信データの確認応答を待つ上限 (ミリ秒)。`0` は OS の既定値。Linux と Android のみ |
+| `allow_insecure_remote` | 開発用。`sslmode=disable` でローカル以外への平文接続を許す (`true` / `false`) |
 
 ### プリペアドステートメント
 
@@ -186,12 +223,92 @@ async fn main() {
 `unbuffered = true` を渡すと `next_row` で 1 行ずつ `Row` として取得できます。
 
 ```rust
-conn.execute_uncached("SELECT generate_series(1, $1::int)", &[Value::Int4(100_000)], true)
+conn.execute_uncached("SELECT n FROM generate_series(1, $1::int) AS n", &[Value::Int4(100_000)], true)
     .await?;
 while let Some(row) = conn.next_row().await? {
-    println!("{row:?}");
+    let n: i32 = row.get_by_name("n")?;
+    println!("{n}");
 }
 ```
+
+読み取りを途中でやめる場合は、次のクエリの前に `finish_rows` で読み残しを破棄します。
+
+### 行と型付きの値
+
+`query_all` はすべての行を `Row` として返します。`Row` からは列番号か列名で、Rust の型に変換して取り出せます。
+
+```rust
+use shiguredo_postgres::connection::{ConnectOptions, Connection};
+use shiguredo_postgres::converters::{IpNetwork, Value};
+use shiguredo_postgres::datetime::{Interval, Timestamptz};
+
+#[tokio::main]
+async fn main() {
+    let options = ConnectOptions::from_url(
+        "postgres://postgres:password@127.0.0.1:5432/mydb?sslmode=disable",
+    )
+    .expect("接続文字列の解析に失敗しました");
+    let mut conn = Connection::connect(options).await.expect("接続に失敗しました");
+
+    let rows = conn
+        .query_all(
+            "SELECT id, name, nickname, tags, client_addr, session_timeout, created_at \
+             FROM users WHERE age > $1",
+            &[Value::Int4(20)],
+        )
+        .await
+        .expect("クエリの実行に失敗しました");
+    for row in &rows {
+        let id: i32 = row.get_by_name("id").expect("id を取得できません");
+        let name: String = row.get_by_name("name").expect("name を取得できません");
+        // NULL を許す列は get_opt / get_opt_by_name で Option として取り出す
+        let nickname: Option<String> = row
+            .get_opt_by_name("nickname")
+            .expect("nickname を取得できません");
+        // 配列は Vec<T>、NULL を含みうる配列は Vec<Option<T>> で取り出す
+        let tags: Vec<Option<String>> = row.get_by_name("tags").expect("tags を取得できません");
+        let client_addr: IpNetwork = row
+            .get_by_name("client_addr")
+            .expect("client_addr を取得できません");
+        let session_timeout: Interval = row
+            .get_by_name("session_timeout")
+            .expect("session_timeout を取得できません");
+        let created_at: Timestamptz = row
+            .get_by_name("created_at")
+            .expect("created_at を取得できません");
+        println!(
+            "{id} {name} {nickname:?} {tags:?} {client_addr:?} {session_timeout:?} {created_at:?}"
+        );
+    }
+}
+```
+
+列の値は `Value` に変換され、`Row::get` などで次の Rust の型として取り出せます。
+変換できない値は `Value::Text` のまま返ります。
+パラメーターも `Value` で渡します。パラメーターはテキスト形式で送るため、型はクエリの文脈 (`$1::int4` など) で決まります。
+
+| PostgreSQL の型 | `Value` | 取り出せる Rust の型 |
+| --- | --- | --- |
+| `boolean` | `Bool` | `bool` |
+| `smallint` | `Int2` | `i16` / `i32` / `i64` |
+| `integer` | `Int4` | `i32` / `i64` |
+| `bigint` | `Int8` | `i64` |
+| `real` | `Float4` | `f32` / `f64` |
+| `double precision` | `Float8` | `f64` |
+| `numeric` | `Numeric` (文字列) | `String` |
+| `text` / `varchar` / `char` / `name` | `Text` | `String` |
+| `bytea` | `Bytes` | `Vec<u8>` |
+| `oid` | `Oid` | `u32` / `u64` |
+| `oid8` (PostgreSQL 19 以降) | `Oid8` | `u64` |
+| `uuid` | `Uuid` | `u128` |
+| `json` / `jsonb` | `Json` (文字列) | `String` |
+| `date` / `time` / `timestamp` / `timestamptz` | `Date` / `Time` / `Timestamp` / `Timestamptz` | `datetime` モジュールの同名の型 |
+| `interval` | `Interval` | `datetime::Interval` |
+| `inet` | `Inet` | `converters::IpNetwork`、ホストアドレスは `IpAddr` でも取り出せる |
+| `cidr` | `Cidr` | `converters::IpNetwork` |
+| `macaddr` / `macaddr8` | `MacAddr` / `MacAddr8` | `[u8; 6]` / `[u8; 8]` |
+| 配列 | `Array` | `Vec<T>` / `Vec<Option<T>>` (多次元は入れ子の `Vec`) |
+| それ以外 | `Text` | `String` |
 
 ### トランザクション
 
@@ -333,6 +450,37 @@ async fn main() {
     }
 }
 ```
+
+### TLS とクライアント証明書
+
+既定の `sslmode=verify-full` は、OS の証明書ストアで証明書の信頼チェーンと接続先の名前を検証します。
+`sslrootcert` を指定した場合は、OS の証明書ストアの代わりにその CA で検証します。
+クライアント証明書は `sslcert` と `sslkey` で指定します。
+
+```rust
+use shiguredo_postgres::connection::{ConnectOptions, Connection};
+
+#[tokio::main]
+async fn main() {
+    let options = ConnectOptions::from_conninfo(
+        "host=db.example.com dbname=mydb user=app \
+         sslrootcert=/etc/postgres/ca.pem sslcert=/etc/postgres/client.pem sslkey=/etc/postgres/client.key",
+    )
+    .expect("接続文字列の解析に失敗しました");
+    let mut conn = Connection::connect(options).await.expect("接続に失敗しました");
+    conn.ping().await.expect("Ping に失敗しました");
+}
+```
+
+| `sslmode` | 検証の内容 |
+| --- | --- |
+| `verify-full` (既定) | 証明書の信頼チェーンと接続先の名前を検証する |
+| `verify-ca` | 信頼チェーンだけを検証する。`sslrootcert` がなければ OS の証明書ストアを使う |
+| `require` | TLS を必須とする。`sslrootcert` を指定した場合だけ信頼チェーンを検証する |
+| `disable` | 平文で接続する。`localhost`、ループバック IP、Unix ドメインソケットに限る |
+
+- TLS の接続に失敗しても、平文には切り替えません
+- 秘密鍵は PEM または DER の PKCS#8、PKCS#1 (RSA)、SEC1 (EC) を受け付けます。暗号化された鍵には対応しません
 
 ### OAuth 認証
 
@@ -490,6 +638,16 @@ let config = PoolConfig::default().with_after_connect(|conn| {
 `with_on_acquire` は貸出前の検証に使い、エラーを返すと接続を破棄して取得をやり直します。
 `with_after_release` は返却後の後始末に使います。
 `RecyclingMethod::Custom` を指定すると、任意の非同期処理でセッションを初期化できます。
+
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) 形式のスキルを同梱しています。`gh skill install` コマンドで対応する AI エージェント (Claude Code、Cursor、GitHub Copilot、Gemini CLI など) にインストールでき、エージェントがこのライブラリの API と使い方を理解した上で支援できるようになります。
+
+```bash
+gh skill install shiguredo/postgres-rs shiguredo-postgres
+```
+
+スキルの内容は [`skills/shiguredo-postgres/SKILL.md`](skills/shiguredo-postgres/SKILL.md) を参照してください。
 
 ## ライセンス
 
