@@ -200,6 +200,76 @@ pub mod oid {
     /// uuid 型 (汎用一意識別子)。
     pub const UUID: u32 = 2950;
 
+    // 以下は変換せず `Value::Text` として扱う組み込み型。配列は要素を `Value::Text` にした
+    // `Value::Array` として返すため、要素型と配列型の OID を持つ。
+    // OID は PostgreSQL 19 の src/include/catalog/pg_type.dat の oid と array_type_oid による。
+    /// interval 型 (時間間隔)。
+    pub const INTERVAL: u32 = 1186;
+    /// timetz 型 (タイムゾーン付きの時刻)。
+    pub const TIMETZ: u32 = 1266;
+    /// inet 型 (IP アドレスとネットワーク)。
+    pub const INET: u32 = 869;
+    /// cidr 型 (IP ネットワーク)。
+    pub const CIDR: u32 = 650;
+    /// macaddr 型 (6 バイトの MAC アドレス)。
+    pub const MACADDR: u32 = 829;
+    /// macaddr8 型 (8 バイトの MAC アドレス)。
+    pub const MACADDR8: u32 = 774;
+    /// money 型 (通貨)。
+    pub const MONEY: u32 = 790;
+    /// bit 型 (固定長のビット列)。
+    pub const BIT: u32 = 1560;
+    /// varbit 型 (可変長のビット列)。
+    pub const VARBIT: u32 = 1562;
+    /// xml 型 (XML)。
+    pub const XML: u32 = 142;
+    /// point 型 (平面上の点)。
+    pub const POINT: u32 = 600;
+    /// line 型 (無限の直線)。
+    pub const LINE: u32 = 628;
+    /// lseg 型 (線分)。
+    pub const LSEG: u32 = 601;
+    /// path 型 (経路)。
+    pub const PATH: u32 = 602;
+    /// polygon 型 (多角形)。
+    pub const POLYGON: u32 = 604;
+    /// circle 型 (円)。
+    pub const CIRCLE: u32 = 718;
+    /// tsvector 型 (全文検索の文書)。
+    pub const TSVECTOR: u32 = 3614;
+    /// tsquery 型 (全文検索の問い合わせ)。
+    pub const TSQUERY: u32 = 3615;
+    /// jsonpath 型 (SQL/JSON パス式)。
+    pub const JSONPATH: u32 = 4072;
+    /// pg_lsn 型 (WAL の位置)。
+    pub const PG_LSN: u32 = 3220;
+    /// xid8 型 (64 ビットのトランザクション ID)。
+    pub const XID8: u32 = 5069;
+    /// int4range 型 (integer の範囲)。
+    pub const INT4RANGE: u32 = 3904;
+    /// int8range 型 (bigint の範囲)。
+    pub const INT8RANGE: u32 = 3926;
+    /// numrange 型 (numeric の範囲)。
+    pub const NUMRANGE: u32 = 3906;
+    /// tsrange 型 (timestamp の範囲)。
+    pub const TSRANGE: u32 = 3908;
+    /// tstzrange 型 (timestamptz の範囲)。
+    pub const TSTZRANGE: u32 = 3910;
+    /// daterange 型 (date の範囲)。
+    pub const DATERANGE: u32 = 3912;
+    /// int4multirange 型 (integer の範囲の集合)。
+    pub const INT4MULTIRANGE: u32 = 4451;
+    /// int8multirange 型 (bigint の範囲の集合)。
+    pub const INT8MULTIRANGE: u32 = 4536;
+    /// nummultirange 型 (numeric の範囲の集合)。
+    pub const NUMMULTIRANGE: u32 = 4532;
+    /// tsmultirange 型 (timestamp の範囲の集合)。
+    pub const TSMULTIRANGE: u32 = 4533;
+    /// tstzmultirange 型 (timestamptz の範囲の集合)。
+    pub const TSTZMULTIRANGE: u32 = 4534;
+    /// datemultirange 型 (date の範囲の集合)。
+    pub const DATEMULTIRANGE: u32 = 4535;
+
     /// 組み込み型の配列型 OID。
     ///
     /// サーバーは配列の要素型をクライアントに直接送らないため、
@@ -250,5 +320,71 @@ pub mod oid {
         pub const JSONB: u32 = 3807;
         /// uuid 型の配列型の OID。
         pub const UUID: u32 = 2951;
+        /// interval 型の配列型の OID。
+        pub const INTERVAL: u32 = 1187;
+        /// timetz 型の配列型の OID。
+        pub const TIMETZ: u32 = 1270;
+        /// inet 型の配列型の OID。
+        pub const INET: u32 = 1041;
+        /// cidr 型の配列型の OID。
+        pub const CIDR: u32 = 651;
+        /// macaddr 型の配列型の OID。
+        pub const MACADDR: u32 = 1040;
+        /// macaddr8 型の配列型の OID。
+        pub const MACADDR8: u32 = 775;
+        /// money 型の配列型の OID。
+        pub const MONEY: u32 = 791;
+        /// bit 型の配列型の OID。
+        pub const BIT: u32 = 1561;
+        /// varbit 型の配列型の OID。
+        pub const VARBIT: u32 = 1563;
+        /// xml 型の配列型の OID。
+        pub const XML: u32 = 143;
+        /// point 型の配列型の OID。
+        pub const POINT: u32 = 1017;
+        /// line 型の配列型の OID。
+        pub const LINE: u32 = 629;
+        /// lseg 型の配列型の OID。
+        pub const LSEG: u32 = 1018;
+        /// path 型の配列型の OID。
+        pub const PATH: u32 = 1019;
+        /// polygon 型の配列型の OID。
+        pub const POLYGON: u32 = 1027;
+        /// circle 型の配列型の OID。
+        pub const CIRCLE: u32 = 719;
+        /// tsvector 型の配列型の OID。
+        pub const TSVECTOR: u32 = 3643;
+        /// tsquery 型の配列型の OID。
+        pub const TSQUERY: u32 = 3645;
+        /// jsonpath 型の配列型の OID。
+        pub const JSONPATH: u32 = 4073;
+        /// pg_lsn 型の配列型の OID。
+        pub const PG_LSN: u32 = 3221;
+        /// xid8 型の配列型の OID。
+        pub const XID8: u32 = 271;
+        /// int4range 型の配列型の OID。
+        pub const INT4RANGE: u32 = 3905;
+        /// int8range 型の配列型の OID。
+        pub const INT8RANGE: u32 = 3927;
+        /// numrange 型の配列型の OID。
+        pub const NUMRANGE: u32 = 3907;
+        /// tsrange 型の配列型の OID。
+        pub const TSRANGE: u32 = 3909;
+        /// tstzrange 型の配列型の OID。
+        pub const TSTZRANGE: u32 = 3911;
+        /// daterange 型の配列型の OID。
+        pub const DATERANGE: u32 = 3913;
+        /// int4multirange 型の配列型の OID。
+        pub const INT4MULTIRANGE: u32 = 6150;
+        /// int8multirange 型の配列型の OID。
+        pub const INT8MULTIRANGE: u32 = 6157;
+        /// nummultirange 型の配列型の OID。
+        pub const NUMMULTIRANGE: u32 = 6151;
+        /// tsmultirange 型の配列型の OID。
+        pub const TSMULTIRANGE: u32 = 6152;
+        /// tstzmultirange 型の配列型の OID。
+        pub const TSTZMULTIRANGE: u32 = 6153;
+        /// datemultirange 型の配列型の OID。
+        pub const DATEMULTIRANGE: u32 = 6155;
     }
 }

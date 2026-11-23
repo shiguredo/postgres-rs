@@ -963,3 +963,143 @@ async fn test_timestamptz_timezone() {
         "タイムゾーン変更後も timestamptz が一致しません"
     );
 }
+
+/// テキストとして扱う組み込み型の OID 定数がサーバーのカタログと一致し、
+/// その配列を要素がテキストの配列として取り出せることを確認する。
+#[tokio::test]
+async fn test_text_type_arrays() {
+    helpers::init_tracing();
+    let (options, _node) = helpers::build_postgres_options().await;
+    let mut conn = helpers::connect(&options).await;
+
+    // (型名, 要素型 OID, 配列型 OID)。サーバーの pg_type と突き合わせて定数の誤りを検出する。
+    let expected = [
+        ("interval", oid::INTERVAL, oid::array::INTERVAL),
+        ("timetz", oid::TIMETZ, oid::array::TIMETZ),
+        ("inet", oid::INET, oid::array::INET),
+        ("cidr", oid::CIDR, oid::array::CIDR),
+        ("macaddr", oid::MACADDR, oid::array::MACADDR),
+        ("macaddr8", oid::MACADDR8, oid::array::MACADDR8),
+        ("money", oid::MONEY, oid::array::MONEY),
+        ("bit", oid::BIT, oid::array::BIT),
+        ("varbit", oid::VARBIT, oid::array::VARBIT),
+        ("xml", oid::XML, oid::array::XML),
+        ("point", oid::POINT, oid::array::POINT),
+        ("line", oid::LINE, oid::array::LINE),
+        ("lseg", oid::LSEG, oid::array::LSEG),
+        ("path", oid::PATH, oid::array::PATH),
+        ("polygon", oid::POLYGON, oid::array::POLYGON),
+        ("circle", oid::CIRCLE, oid::array::CIRCLE),
+        ("tsvector", oid::TSVECTOR, oid::array::TSVECTOR),
+        ("tsquery", oid::TSQUERY, oid::array::TSQUERY),
+        ("jsonpath", oid::JSONPATH, oid::array::JSONPATH),
+        ("pg_lsn", oid::PG_LSN, oid::array::PG_LSN),
+        ("xid8", oid::XID8, oid::array::XID8),
+        ("int4range", oid::INT4RANGE, oid::array::INT4RANGE),
+        ("int8range", oid::INT8RANGE, oid::array::INT8RANGE),
+        ("numrange", oid::NUMRANGE, oid::array::NUMRANGE),
+        ("tsrange", oid::TSRANGE, oid::array::TSRANGE),
+        ("tstzrange", oid::TSTZRANGE, oid::array::TSTZRANGE),
+        ("daterange", oid::DATERANGE, oid::array::DATERANGE),
+        (
+            "int4multirange",
+            oid::INT4MULTIRANGE,
+            oid::array::INT4MULTIRANGE,
+        ),
+        (
+            "int8multirange",
+            oid::INT8MULTIRANGE,
+            oid::array::INT8MULTIRANGE,
+        ),
+        (
+            "nummultirange",
+            oid::NUMMULTIRANGE,
+            oid::array::NUMMULTIRANGE,
+        ),
+        ("tsmultirange", oid::TSMULTIRANGE, oid::array::TSMULTIRANGE),
+        (
+            "tstzmultirange",
+            oid::TSTZMULTIRANGE,
+            oid::array::TSTZMULTIRANGE,
+        ),
+        (
+            "datemultirange",
+            oid::DATEMULTIRANGE,
+            oid::array::DATEMULTIRANGE,
+        ),
+    ];
+    let names = Value::Array {
+        element_type: oid::TEXT,
+        values: expected
+            .iter()
+            .map(|(name, _, _)| Value::Text((*name).to_string()))
+            .collect(),
+    };
+    let rows = conn
+        .query_all(
+            "SELECT typname::text, oid::int8, typarray::int8, typdelim::text FROM pg_type \
+             WHERE typname = ANY($1::text[]) AND typnamespace = 'pg_catalog'::regnamespace",
+            &[names],
+        )
+        .await
+        .expect("pg_type の取得に失敗しました");
+    assert_eq!(rows.len(), expected.len(), "カタログにない型があります");
+    for row in &rows {
+        let name = row.get::<String>(0).expect("型名を取得できません");
+        let (_, element, array) = expected
+            .iter()
+            .find(|(expected_name, _, _)| *expected_name == name)
+            .expect("問い合わせていない型が返りました");
+        assert_eq!(
+            row.get::<i64>(1).expect("型の OID を取得できません"),
+            i64::from(*element),
+            "{name} の OID が定数と一致しません"
+        );
+        assert_eq!(
+            row.get::<i64>(2).expect("配列型の OID を取得できません"),
+            i64::from(*array),
+            "{name} の配列型の OID が定数と一致しません"
+        );
+        // 配列の解析は区切り文字が `,` の型だけを扱う。
+        assert_eq!(
+            row.get::<String>(3).expect("区切り文字を取得できません"),
+            ",",
+            "{name} の配列の区切り文字が `,` ではありません"
+        );
+    }
+
+    // 代表的な型の配列を、NULL を含めて要素がテキストの配列として取り出す。
+    let row = conn
+        .query_one(
+            "SELECT ARRAY['1 day', NULL]::interval[], ARRAY['192.168.0.1/24']::inet[], \
+             ARRAY['[1,3)']::int4range[], ARRAY[point(1, 2)]",
+            &[],
+        )
+        .await
+        .expect("配列の取得に失敗しました");
+    for (index, element, values) in [
+        (0, oid::INTERVAL, vec![Some("1 day"), None]),
+        (1, oid::INET, vec![Some("192.168.0.1/24")]),
+        (2, oid::INT4RANGE, vec![Some("[1,3)")]),
+        (3, oid::POINT, vec![Some("(1,2)")]),
+    ] {
+        assert!(
+            matches!(
+                row.value(index),
+                Some(Value::Array { element_type, .. }) if *element_type == element
+            ),
+            "列 {index} が要素型 {element} の配列になりません: {:?}",
+            row.value(index)
+        );
+        let expected: Vec<Option<String>> = values
+            .into_iter()
+            .map(|value| value.map(str::to_string))
+            .collect();
+        assert_eq!(
+            row.get::<Vec<Option<String>>>(index)
+                .expect("配列を取得できません"),
+            expected,
+            "列 {index} の要素が一致しません"
+        );
+    }
+}

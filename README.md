@@ -82,7 +82,11 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
 - 接続文字列
   - libpq 形式
   - `postgres://` URL
-- 型変換: 数値 / 浮動小数 / 日付時刻 / NUMERIC / UUID / JSON / JSONB / 配列 / bytea / oid8 (PostgreSQL 19 以降) 等
+- 型変換
+  - bool / 整数 / 浮動小数 / NUMERIC / oid / oid8 (PostgreSQL 19 以降) / bytea / UUID / JSON / JSONB / date / time / timestamp / timestamptz と、それらの配列
+  - interval / inet / 範囲型などそれ以外の型はテキストとして返す
+  - interval / inet / 範囲型など主な組み込み型の配列は、要素がテキストの配列として返す (対象は `constants::oid::array` に挙げた型、`box` の配列は含まない)
+  - 独自の変換の登録 (`register_converter`)
 
 対応しない機能とその理由は [意図的に実装しない機能](docs/unsupported-features.md) を参照してください。
 

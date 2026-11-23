@@ -148,6 +148,12 @@ fn escape_bytea(value: &[u8]) -> String {
 }
 
 /// フィールド型 (OID) に対応するデコーダーを取得する。
+///
+/// bool、整数、浮動小数点数、numeric、oid / oid8、bytea、uuid、json / jsonb、
+/// date / time / timestamp / timestamptz とそれらの配列は、対応する [`Value`] に変換する。
+/// interval や inet などそれ以外の型は [`Value::Text`] とし、[`oid::array`] に挙げた
+/// 組み込み型の配列は要素を `Value::Text` にした [`Value::Array`] とする。
+/// 独自の変換が必要な型は、接続の `register_converter` で登録する。
 pub fn decoder_for(type_oid: u32) -> Converter {
     match type_oid {
         oid::BOOL => convert_bool,
@@ -166,31 +172,67 @@ pub fn decoder_for(type_oid: u32) -> Converter {
         oid::TIME => convert_time,
         oid::TIMESTAMP => convert_timestamp,
         oid::TIMESTAMPTZ => convert_timestamptz,
-        // 配列型。要素型 OID を固定した薄いラッパーで変換する。
-        oid::array::BOOL => convert_bool_array,
-        oid::array::BYTEA => convert_bytea_array,
-        oid::array::CHAR => convert_char_array,
-        oid::array::NAME => convert_name_array,
-        oid::array::INT2 => convert_int2_array,
-        oid::array::INT4 => convert_int4_array,
-        oid::array::TEXT => convert_text_array,
-        oid::array::BPCHAR => convert_bpchar_array,
-        oid::array::VARCHAR => convert_varchar_array,
-        oid::array::INT8 => convert_int8_array,
-        oid::array::FLOAT4 => convert_float4_array,
-        oid::array::FLOAT8 => convert_float8_array,
-        oid::array::OID => convert_oid_array,
-        oid::array::OID8 => convert_oid8_array,
-        oid::array::NUMERIC => convert_numeric_array,
-        oid::array::UUID => convert_uuid_array,
-        oid::array::JSON => convert_json_array,
-        oid::array::JSONB => convert_jsonb_array,
-        oid::array::DATE => convert_date_array,
-        oid::array::TIME => convert_time_array,
-        oid::array::TIMESTAMP => convert_timestamp_array,
-        oid::array::TIMESTAMPTZ => convert_timestamptz_array,
-        // TEXT / VARCHAR / BPCHAR / NAME / CHAR / OID / JSON / JSONB /
-        // 未知の型はテキストとして扱う。
+        // 配列型。要素型 OID を const ジェネリクスで固定した関数で変換する。
+        oid::array::BOOL => convert_array_of::<{ oid::BOOL }>,
+        oid::array::BYTEA => convert_array_of::<{ oid::BYTEA }>,
+        oid::array::CHAR => convert_array_of::<{ oid::CHAR }>,
+        oid::array::NAME => convert_array_of::<{ oid::NAME }>,
+        oid::array::INT2 => convert_array_of::<{ oid::INT2 }>,
+        oid::array::INT4 => convert_array_of::<{ oid::INT4 }>,
+        oid::array::TEXT => convert_array_of::<{ oid::TEXT }>,
+        oid::array::BPCHAR => convert_array_of::<{ oid::BPCHAR }>,
+        oid::array::VARCHAR => convert_array_of::<{ oid::VARCHAR }>,
+        oid::array::INT8 => convert_array_of::<{ oid::INT8 }>,
+        oid::array::FLOAT4 => convert_array_of::<{ oid::FLOAT4 }>,
+        oid::array::FLOAT8 => convert_array_of::<{ oid::FLOAT8 }>,
+        oid::array::OID => convert_array_of::<{ oid::OID }>,
+        oid::array::OID8 => convert_array_of::<{ oid::OID8 }>,
+        oid::array::NUMERIC => convert_array_of::<{ oid::NUMERIC }>,
+        oid::array::UUID => convert_array_of::<{ oid::UUID }>,
+        oid::array::JSON => convert_array_of::<{ oid::JSON }>,
+        oid::array::JSONB => convert_array_of::<{ oid::JSONB }>,
+        oid::array::DATE => convert_array_of::<{ oid::DATE }>,
+        oid::array::TIME => convert_array_of::<{ oid::TIME }>,
+        oid::array::TIMESTAMP => convert_array_of::<{ oid::TIMESTAMP }>,
+        oid::array::TIMESTAMPTZ => convert_array_of::<{ oid::TIMESTAMPTZ }>,
+        // 変換せずテキストとして扱う組み込み型の配列。要素は `Value::Text` になる。
+        // box の配列は要素の区切りが `;` (pg_type.dat の typdelim) で、この配列の解析と
+        // 形式が異なるため含めない。
+        oid::array::INTERVAL => convert_array_of::<{ oid::INTERVAL }>,
+        oid::array::TIMETZ => convert_array_of::<{ oid::TIMETZ }>,
+        oid::array::INET => convert_array_of::<{ oid::INET }>,
+        oid::array::CIDR => convert_array_of::<{ oid::CIDR }>,
+        oid::array::MACADDR => convert_array_of::<{ oid::MACADDR }>,
+        oid::array::MACADDR8 => convert_array_of::<{ oid::MACADDR8 }>,
+        oid::array::MONEY => convert_array_of::<{ oid::MONEY }>,
+        oid::array::BIT => convert_array_of::<{ oid::BIT }>,
+        oid::array::VARBIT => convert_array_of::<{ oid::VARBIT }>,
+        oid::array::XML => convert_array_of::<{ oid::XML }>,
+        oid::array::POINT => convert_array_of::<{ oid::POINT }>,
+        oid::array::LINE => convert_array_of::<{ oid::LINE }>,
+        oid::array::LSEG => convert_array_of::<{ oid::LSEG }>,
+        oid::array::PATH => convert_array_of::<{ oid::PATH }>,
+        oid::array::POLYGON => convert_array_of::<{ oid::POLYGON }>,
+        oid::array::CIRCLE => convert_array_of::<{ oid::CIRCLE }>,
+        oid::array::TSVECTOR => convert_array_of::<{ oid::TSVECTOR }>,
+        oid::array::TSQUERY => convert_array_of::<{ oid::TSQUERY }>,
+        oid::array::JSONPATH => convert_array_of::<{ oid::JSONPATH }>,
+        oid::array::PG_LSN => convert_array_of::<{ oid::PG_LSN }>,
+        oid::array::XID8 => convert_array_of::<{ oid::XID8 }>,
+        oid::array::INT4RANGE => convert_array_of::<{ oid::INT4RANGE }>,
+        oid::array::INT8RANGE => convert_array_of::<{ oid::INT8RANGE }>,
+        oid::array::NUMRANGE => convert_array_of::<{ oid::NUMRANGE }>,
+        oid::array::TSRANGE => convert_array_of::<{ oid::TSRANGE }>,
+        oid::array::TSTZRANGE => convert_array_of::<{ oid::TSTZRANGE }>,
+        oid::array::DATERANGE => convert_array_of::<{ oid::DATERANGE }>,
+        oid::array::INT4MULTIRANGE => convert_array_of::<{ oid::INT4MULTIRANGE }>,
+        oid::array::INT8MULTIRANGE => convert_array_of::<{ oid::INT8MULTIRANGE }>,
+        oid::array::NUMMULTIRANGE => convert_array_of::<{ oid::NUMMULTIRANGE }>,
+        oid::array::TSMULTIRANGE => convert_array_of::<{ oid::TSMULTIRANGE }>,
+        oid::array::TSTZMULTIRANGE => convert_array_of::<{ oid::TSTZMULTIRANGE }>,
+        oid::array::DATEMULTIRANGE => convert_array_of::<{ oid::DATEMULTIRANGE }>,
+        // TEXT / VARCHAR / BPCHAR / NAME / CHAR、上の配列に挙げた要素型、
+        // 独自型を含む未知の型はテキストとして扱う。
         _ => convert_text,
     }
 }
@@ -743,75 +785,12 @@ fn encode_array_element(value: &Value) -> String {
     }
 }
 
-// 以下は要素型 OID ごとの薄いラッパー。
-//
-// `Converter` が fn ポインタのため要素 OID をキャプチャできないことから、
-// 配列型 OID ごとにラッパーを用意している。
-fn convert_bool_array(s: &str) -> Value {
-    convert_array(s, oid::BOOL)
-}
-fn convert_bytea_array(s: &str) -> Value {
-    convert_array(s, oid::BYTEA)
-}
-fn convert_char_array(s: &str) -> Value {
-    convert_array(s, oid::CHAR)
-}
-fn convert_name_array(s: &str) -> Value {
-    convert_array(s, oid::NAME)
-}
-fn convert_text_array(s: &str) -> Value {
-    convert_array(s, oid::TEXT)
-}
-fn convert_bpchar_array(s: &str) -> Value {
-    convert_array(s, oid::BPCHAR)
-}
-fn convert_varchar_array(s: &str) -> Value {
-    convert_array(s, oid::VARCHAR)
-}
-fn convert_oid_array(s: &str) -> Value {
-    convert_array(s, oid::OID)
-}
-fn convert_oid8_array(s: &str) -> Value {
-    convert_array(s, oid::OID8)
-}
-fn convert_int2_array(s: &str) -> Value {
-    convert_array(s, oid::INT2)
-}
-fn convert_int4_array(s: &str) -> Value {
-    convert_array(s, oid::INT4)
-}
-fn convert_int8_array(s: &str) -> Value {
-    convert_array(s, oid::INT8)
-}
-fn convert_float4_array(s: &str) -> Value {
-    convert_array(s, oid::FLOAT4)
-}
-fn convert_float8_array(s: &str) -> Value {
-    convert_array(s, oid::FLOAT8)
-}
-fn convert_numeric_array(s: &str) -> Value {
-    convert_array(s, oid::NUMERIC)
-}
-fn convert_uuid_array(s: &str) -> Value {
-    convert_array(s, oid::UUID)
-}
-fn convert_json_array(s: &str) -> Value {
-    convert_array(s, oid::JSON)
-}
-fn convert_jsonb_array(s: &str) -> Value {
-    convert_array(s, oid::JSONB)
-}
-fn convert_date_array(s: &str) -> Value {
-    convert_array(s, oid::DATE)
-}
-fn convert_time_array(s: &str) -> Value {
-    convert_array(s, oid::TIME)
-}
-fn convert_timestamp_array(s: &str) -> Value {
-    convert_array(s, oid::TIMESTAMP)
-}
-fn convert_timestamptz_array(s: &str) -> Value {
-    convert_array(s, oid::TIMESTAMPTZ)
+/// 要素型 OID を固定して配列を変換する。
+///
+/// `Converter` は fn ポインタで要素型 OID をキャプチャできないため、要素型 OID を
+/// const ジェネリクスで受け取り、配列型ごとに別の関数として実体化する。
+fn convert_array_of<const ELEMENT_OID: u32>(s: &str) -> Value {
+    convert_array(s, ELEMENT_OID)
 }
 
 /// 型が一致しない値の変換エラーを生成する。
@@ -1515,7 +1494,7 @@ mod tests {
 
     #[test]
     fn test_convert_array_int4() {
-        let value = convert_int4_array("{1,2,3}");
+        let value = decoder_for(oid::array::INT4)("{1,2,3}");
         assert_eq!(
             value,
             Value::Array {
@@ -1579,7 +1558,7 @@ mod tests {
 
     #[test]
     fn test_convert_nested_array() {
-        let value = convert_int4_array("{{1,2},{3,4}}");
+        let value = decoder_for(oid::array::INT4)("{{1,2},{3,4}}");
         assert_eq!(
             value,
             Value::Array {
@@ -1601,7 +1580,7 @@ mod tests {
 
     #[test]
     fn test_convert_array_with_null() {
-        let value = convert_int4_array("{1,NULL,3}");
+        let value = decoder_for(oid::array::INT4)("{1,NULL,3}");
         assert_eq!(
             value,
             Value::Array {
@@ -1624,12 +1603,12 @@ mod tests {
     fn test_convert_array_invalid() {
         // 波括弧で囲まれていない場合は Text にフォールバックする。
         assert_eq!(
-            convert_int4_array("1,2,3"),
+            decoder_for(oid::array::INT4)("1,2,3"),
             Value::Text("1,2,3".to_string())
         );
         // 引用符が閉じられていない場合は Text にフォールバックする。
         assert_eq!(
-            convert_int4_array("{\"a}"),
+            decoder_for(oid::array::INT4)("{\"a}"),
             Value::Text("{\"a}".to_string())
         );
     }
@@ -1638,7 +1617,7 @@ mod tests {
     fn test_convert_array_empty() {
         // PostgreSQL の空配列 `{}` は空の要素リストとして扱う。
         assert_eq!(
-            convert_int4_array("{}"),
+            decoder_for(oid::array::INT4)("{}"),
             Value::Array {
                 element_type: oid::INT4,
                 values: Vec::new(),
@@ -1646,7 +1625,7 @@ mod tests {
         );
         // 空白だけの `{ }` も空の要素リストとして扱う。
         assert_eq!(
-            convert_int4_array("{ }"),
+            decoder_for(oid::array::INT4)("{ }"),
             Value::Array {
                 element_type: oid::INT4,
                 values: Vec::new(),
@@ -1654,7 +1633,7 @@ mod tests {
         );
         // 引用符付きの空文字列 `{""}` は空文字列 1 要素の配列として扱う。
         assert_eq!(
-            convert_int4_array("{\"\"}"),
+            decoder_for(oid::array::INT4)("{\"\"}"),
             Value::Array {
                 element_type: oid::INT4,
                 values: vec![Value::Text(String::new())],
@@ -1691,7 +1670,7 @@ mod tests {
         };
         let bytes = original.to_bytes().expect("配列のエンコードに成功しました");
         let text = String::from_utf8(bytes).expect("UTF-8 です");
-        assert_eq!(convert_int4_array(&text), original);
+        assert_eq!(decoder_for(oid::array::INT4)(&text), original);
     }
 
     #[test]
@@ -1737,14 +1716,14 @@ mod tests {
     fn test_array_keeps_non_ascii_whitespace_unquoted() {
         // サーバーは NBSP を区切りとして扱わないため、引用符なしで出力する。
         assert_eq!(
-            convert_text_array("{\u{00A0}}"),
+            decoder_for(oid::array::TEXT)("{\u{00A0}}"),
             Value::Array {
                 element_type: oid::TEXT,
                 values: vec![Value::Text("\u{00A0}".to_string())],
             }
         );
         assert_eq!(
-            convert_text_array("{a\u{00A0}}"),
+            decoder_for(oid::array::TEXT)("{a\u{00A0}}"),
             Value::Array {
                 element_type: oid::TEXT,
                 values: vec![Value::Text("a\u{00A0}".to_string())],
