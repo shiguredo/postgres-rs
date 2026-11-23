@@ -696,6 +696,8 @@ checksum = "521929c2893005420ccee04aada685000c967cbcae36cd46117b40bf5495e5ab"
 name = "shiguredo_postgres"
 version = "2026.0.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64ct",
  "rcgen",
  "rustls",
  "rustls-native-certs",
