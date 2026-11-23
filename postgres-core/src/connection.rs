@@ -199,34 +199,7 @@ impl ConnectOptions {
     pub fn from_conninfo(conninfo: &str) -> Result<Self> {
         let mut options = Self::default();
         for (key, value) in parse_conninfo(conninfo)? {
-            match key.as_str() {
-                "host" => options.host = value,
-                "port" => {
-                    options.port = value
-                        .parse()
-                        .map_err(|_| Error::interface("Invalid port in connection string"))?
-                }
-                "dbname" | "database" => options.database = Some(value),
-                "user" => options.user = value,
-                "password" => options.password = value.into_bytes(),
-                "application_name" => options.application_name = Some(value),
-                "connect_timeout" => {
-                    let seconds: u64 = value.parse().map_err(|_| {
-                        Error::interface("Invalid connect_timeout in connection string")
-                    })?;
-                    options.connect_timeout = Duration::from_secs(seconds);
-                }
-                "sslmode" => options.ssl_mode = SslMode::from_str(&value)?,
-                "allow_insecure_remote" => {
-                    options.allow_insecure_remote = value.parse().map_err(|_| {
-                        Error::interface("allow_insecure_remote must be true or false")
-                    })?
-                }
-                "sslrootcert" => options.ssl_ca = Some(value),
-                "sslcert" => options.ssl_cert = Some(value),
-                "sslkey" => options.ssl_key = Some(value),
-                _ => return Err(Error::interface("Unsupported connection option")),
-            }
+            options.set_option(&key, value, OptionSource::ConnInfo)?;
         }
         Ok(options)
     }
@@ -282,37 +255,73 @@ impl ConnectOptions {
         }
         if let Some(query) = query {
             for (key, value) in parse_url_query(query)? {
-                match key.as_str() {
-                    "host" => options.host = value,
-                    "user" => options.user = value,
-                    "password" => options.password = value.into_bytes(),
-                    "dbname" | "database" => options.database = Some(value),
-                    "port" => {
-                        options.port = value
-                            .parse()
-                            .map_err(|_| Error::interface("Invalid port in URL"))?
-                    }
-                    "sslmode" => options.ssl_mode = SslMode::from_str(&value)?,
-                    "allow_insecure_remote" => {
-                        options.allow_insecure_remote = value.parse().map_err(|_| {
-                            Error::interface("allow_insecure_remote must be true or false")
-                        })?
-                    }
-                    "application_name" => options.application_name = Some(value),
-                    "connect_timeout" => {
-                        let seconds: u64 = value
-                            .parse()
-                            .map_err(|_| Error::interface("Invalid connect_timeout in URL"))?;
-                        options.connect_timeout = Duration::from_secs(seconds);
-                    }
-                    "sslrootcert" => options.ssl_ca = Some(value),
-                    "sslcert" => options.ssl_cert = Some(value),
-                    "sslkey" => options.ssl_key = Some(value),
-                    _ => return Err(Error::interface("Unsupported URL connection option")),
-                }
+                options.set_option(&key, value, OptionSource::Url)?;
             }
         }
         Ok(options)
+    }
+
+    /// 接続文字列または URL のクエリ文字列で指定された 1 つのキーを設定する。
+    ///
+    /// 2 つの形式で受け付けるキーと値の解釈をそろえるため、ここにまとめる。
+    /// 未対応のキーは黙って無視せずエラーにする。
+    fn set_option(&mut self, key: &str, value: String, source: OptionSource) -> Result<()> {
+        match key {
+            "host" => self.host = value,
+            "port" => {
+                self.port = value
+                    .parse()
+                    .map_err(|_| Error::interface(format!("Invalid port in {}", source.name())))?
+            }
+            "dbname" | "database" => self.database = Some(value),
+            "user" => self.user = value,
+            "password" => self.password = value.into_bytes(),
+            "application_name" => self.application_name = Some(value),
+            "connect_timeout" => {
+                let seconds: u64 = value.parse().map_err(|_| {
+                    Error::interface(format!("Invalid connect_timeout in {}", source.name()))
+                })?;
+                self.connect_timeout = Duration::from_secs(seconds);
+            }
+            "sslmode" => self.ssl_mode = SslMode::from_str(&value)?,
+            "allow_insecure_remote" => {
+                self.allow_insecure_remote = value
+                    .parse()
+                    .map_err(|_| Error::interface("allow_insecure_remote must be true or false"))?
+            }
+            "sslrootcert" => self.ssl_ca = Some(value),
+            "sslcert" => self.ssl_cert = Some(value),
+            "sslkey" => self.ssl_key = Some(value),
+            _ => return Err(Error::interface(source.unsupported_message())),
+        }
+        Ok(())
+    }
+}
+
+/// 接続オプションを指定した文字列の形式。エラーメッセージの表記を分けるために使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionSource {
+    /// libpq 形式の接続文字列。
+    ConnInfo,
+    /// `postgres://` 形式の URL。
+    Url,
+}
+
+impl OptionSource {
+    /// エラーメッセージで使う形式の名前を返す。
+    fn name(self) -> &'static str {
+        match self {
+            Self::ConnInfo => "connection string",
+            Self::Url => "URL",
+        }
+    }
+
+    /// 未対応のキーを指定されたときのエラーメッセージを返す。
+    fn unsupported_message(self) -> &'static str {
+        match self {
+            Self::ConnInfo => "Unsupported connection option",
+            Self::Url => "Unsupported URL connection option",
+        }
     }
 }
 
