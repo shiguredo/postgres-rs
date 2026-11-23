@@ -21,12 +21,12 @@ fuzz_target!(|data: &[u8]| {
         // 主要なスカラー型と配列型のデコーダーをすべて実行する。
         let type_oids = [
             oid::BOOL, oid::BYTEA, oid::INT2, oid::INT4, oid::INT8, oid::FLOAT4, oid::FLOAT8,
-            oid::NUMERIC, oid::OID, oid::UUID, oid::JSON, oid::JSONB, oid::DATE, oid::TIME,
-            oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::array::BOOL, oid::array::BYTEA,
+            oid::NUMERIC, oid::OID, oid::OID8, oid::UUID, oid::JSON, oid::JSONB, oid::DATE,
+            oid::TIME, oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::array::BOOL, oid::array::BYTEA,
             oid::array::INT2, oid::array::INT4, oid::array::INT8, oid::array::FLOAT4,
-            oid::array::FLOAT8, oid::array::NUMERIC, oid::array::UUID, oid::array::JSON,
-            oid::array::JSONB, oid::array::DATE, oid::array::TIME, oid::array::TIMESTAMP,
-            oid::array::TIMESTAMPTZ,
+            oid::array::FLOAT8, oid::array::NUMERIC, oid::array::OID8, oid::array::UUID,
+            oid::array::JSON, oid::array::JSONB, oid::array::DATE, oid::array::TIME,
+            oid::array::TIMESTAMP, oid::array::TIMESTAMPTZ,
         ];
         for type_oid in type_oids {
             let _ = decoder_for(type_oid)(s);

@@ -78,7 +78,7 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
 - 接続文字列
   - libpq 形式
   - `postgres://` URL
-- 型変換: 数値 / 浮動小数 / 日付時刻 / NUMERIC / UUID / JSON / JSONB / 配列 / bytea 等
+- 型変換: 数値 / 浮動小数 / 日付時刻 / NUMERIC / UUID / JSON / JSONB / 配列 / bytea / oid8 (PostgreSQL 19 以降) 等
 
 対応しない機能とその理由は [意図的に実装しない機能](docs/unsupported-features.md) を参照してください。
 

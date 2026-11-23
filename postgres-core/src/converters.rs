@@ -39,6 +39,8 @@ pub enum Value {
     Numeric(String),
     /// OID (オブジェクト識別子)。pg_type 等のカタログの型 OID に使う。
     Oid(u32),
+    /// PostgreSQL 19 で追加された `oid8` (64 ビットのオブジェクト識別子) の値を保持する。
+    Oid8(u64),
     /// PostgreSQL のテキスト型 (`TEXT` / `VARCHAR` 等) の文字列を保持する。
     Text(String),
     /// PostgreSQL の `BYTEA` のバイト列を保持する。
@@ -82,6 +84,7 @@ impl Value {
             Value::Float8(v) => Some(float_to_text(*v).into_bytes()),
             Value::Numeric(s) => Some(s.as_bytes().to_vec()),
             Value::Oid(v) => Some(v.to_string().into_bytes()),
+            Value::Oid8(v) => Some(v.to_string().into_bytes()),
             Value::Text(s) => Some(s.as_bytes().to_vec()),
             Value::Bytes(b) => Some(escape_bytea(b).into_bytes()),
             Value::Uuid(v) => Some(uuid_to_text(*v).into_bytes()),
@@ -155,6 +158,7 @@ pub fn decoder_for(type_oid: u32) -> Converter {
         oid::FLOAT8 => convert_float8,
         oid::BYTEA => convert_bytea,
         oid::OID => convert_oid,
+        oid::OID8 => convert_oid8,
         oid::NUMERIC => convert_numeric,
         oid::UUID => convert_uuid,
         oid::JSON | oid::JSONB => convert_json,
@@ -176,6 +180,7 @@ pub fn decoder_for(type_oid: u32) -> Converter {
         oid::array::FLOAT4 => convert_float4_array,
         oid::array::FLOAT8 => convert_float8_array,
         oid::array::OID => convert_oid_array,
+        oid::array::OID8 => convert_oid8_array,
         oid::array::NUMERIC => convert_numeric_array,
         oid::array::UUID => convert_uuid_array,
         oid::array::JSON => convert_json_array,
@@ -198,6 +203,17 @@ fn convert_text(s: &str) -> Value {
 fn convert_oid(s: &str) -> Value {
     match s.parse() {
         Ok(v) => Value::Oid(v),
+        Err(_) => Value::Text(s.to_string()),
+    }
+}
+
+/// oid8 を u64 として保持する。
+///
+/// PostgreSQL 19 の src/backend/utils/adt/oid8.c の oid8out は、値を符号なしの
+/// 10 進数で出力する。将来の版で出力形式が変わった場合はここを見直す。
+fn convert_oid8(s: &str) -> Value {
+    match s.parse() {
+        Ok(v) => Value::Oid8(v),
         Err(_) => Value::Text(s.to_string()),
     }
 }
@@ -755,6 +771,9 @@ fn convert_varchar_array(s: &str) -> Value {
 fn convert_oid_array(s: &str) -> Value {
     convert_array(s, oid::OID)
 }
+fn convert_oid8_array(s: &str) -> Value {
+    convert_array(s, oid::OID8)
+}
 fn convert_int2_array(s: &str) -> Value {
     convert_array(s, oid::INT2)
 }
@@ -850,6 +869,19 @@ impl TryFrom<&Value> for u32 {
         match value {
             Value::Oid(v) => Ok(*v),
             _ => Err(type_mismatch("OID")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for u64 {
+    type Error = Error;
+
+    /// `oid8` の値を取り出す。`oid` の値も値を失わずに広げられるため受け付ける。
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::Oid8(v) => Ok(*v),
+            Value::Oid(v) => Ok(u64::from(*v)),
+            _ => Err(type_mismatch("OID8")),
         }
     }
 }

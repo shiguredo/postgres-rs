@@ -84,9 +84,9 @@ fn sample_f32_arbitrary(ctx: &mut noprop::TestCaseContext) -> f32 {
 /// 戻り値の添え字は呼び出し側のカバレッジ記録用で、10 種類の variant を
 /// 均等な重みで選ぶ。NaN を含む float と特殊値を含む float は専用のテストで扱う。
 fn sample_scalar(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
-    // 10 variant を均等に選ぶ。256 ケースで特定 variant を見逃す確率は
-    // (9/10)^256 ≒ 7e-12 で無視できる。
-    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    // 11 variant を均等に選ぶ。256 ケースで特定 variant を見逃す確率は
+    // (10/11)^256 ≒ 3e-11 で無視できる。
+    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
     let value = match index {
         0 => Value::Bool(noprop::sample_bool(ctx)),
         1 => Value::Int2(noprop::sample_i16(ctx)),
@@ -97,6 +97,7 @@ fn sample_scalar(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
         6 => Value::Text(sample_text(ctx, 64)),
         7 => Value::Bytes(sample_bytes_capped(ctx, 256)),
         8 => Value::Uuid(noprop::sample_u128(ctx)),
+        9 => Value::Oid8(noprop::sample_u64(ctx)),
         _ => Value::Json(sample_text(ctx, 64)),
     };
     (index, value)
@@ -210,9 +211,9 @@ fn sample_timestamptz(ctx: &mut noprop::TestCaseContext) -> Value {
 /// 複合要素 (ネスト配列) はサポート対象外のため含めない。
 /// 戻り値の添え字は呼び出し側のカバレッジ記録用である。
 fn sample_array(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
-    // 9 種類の要素型を均等に選ぶ。256 ケースで特定型を見逃す確率は
-    // (8/9)^256 ≒ 9e-14 で無視できる。
-    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    // 10 種類の要素型を均等に選ぶ。256 ケースで特定型を見逃す確率は
+    // (9/10)^256 ≒ 2e-12 で無視できる。
+    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
     let count = sample_len(ctx, 8);
     let value = match index {
         0 => Value::Array {
@@ -263,6 +264,12 @@ fn sample_array(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
                 .map(|_| Value::Bytes(sample_bytes_capped(ctx, 64)))
                 .collect(),
         },
+        8 => Value::Array {
+            element_type: oid::OID8,
+            values: (0..count)
+                .map(|_| Value::Oid8(noprop::sample_u64(ctx)))
+                .collect(),
+        },
         _ => Value::Array {
             element_type: oid::UUID,
             values: (0..count)
@@ -293,6 +300,7 @@ fn scalar_decoder_oid(value: &Value) -> u32 {
         Value::Float8(_) => oid::FLOAT8,
         Value::Numeric(_) => oid::NUMERIC,
         Value::Oid(_) => oid::OID,
+        Value::Oid8(_) => oid::OID8,
         Value::Text(_) => oid::TEXT,
         Value::Bytes(_) => oid::BYTEA,
         Value::Uuid(_) => oid::UUID,
@@ -316,6 +324,7 @@ fn array_oid_for(element_type: u32) -> u32 {
         oid::NUMERIC => oid::array::NUMERIC,
         oid::BYTEA => oid::array::BYTEA,
         oid::UUID => oid::array::UUID,
+        oid::OID8 => oid::array::OID8,
         _ => unreachable!("対応する配列型 OID がありません"),
     }
 }
@@ -324,7 +333,7 @@ fn array_oid_for(element_type: u32) -> u32 {
 #[test]
 fn prop_scalar_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("POSTGRES_RS_SEED")?;
-    // 10 variant のうち 1 つでも欠けると検証が偏るため、ビットマスクで記録する。
+    // 11 variant のうち 1 つでも欠けると検証が偏るため、ビットマスクで記録する。
     let seen = Cell::new(0u16);
     let mut runner = noprop::Runner::new(seed);
     runner.run(256, |ctx| {
@@ -338,8 +347,8 @@ fn prop_scalar_roundtrip() -> noprop::TestResult {
     })?;
     assert_eq!(
         seen.get(),
-        0x3ff,
-        "すべてのスカラー型が検証されませんでした: {:#012b}\n{runner}",
+        0x7ff,
+        "すべてのスカラー型が検証されませんでした: {:#013b}\n{runner}",
         seen.get()
     );
     Ok(())
@@ -481,7 +490,7 @@ fn prop_timestamptz_roundtrip() -> noprop::TestResult {
 #[test]
 fn prop_array_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("POSTGRES_RS_SEED")?;
-    // 9 種類の要素型のうち 1 つでも欠けると検証が偏るため記録する。
+    // 10 種類の要素型のうち 1 つでも欠けると検証が偏るため記録する。
     let seen = Cell::new(0u16);
     let non_empty = Cell::new(0usize);
     let mut runner = noprop::Runner::new(seed);
@@ -505,8 +514,8 @@ fn prop_array_roundtrip() -> noprop::TestResult {
     })?;
     assert_eq!(
         seen.get(),
-        0x1ff,
-        "すべての配列要素型が検証されませんでした: {:#011b}\n{runner}",
+        0x3ff,
+        "すべての配列要素型が検証されませんでした: {:#012b}\n{runner}",
         seen.get()
     );
     assert!(

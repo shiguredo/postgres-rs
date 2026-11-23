@@ -11,6 +11,7 @@
 #[path = "helpers/helpers.rs"]
 mod helpers;
 
+use shiguredo_postgres::constants::oid;
 use shiguredo_postgres::converters::Value;
 use shiguredo_postgres::cursor::{Cursor, DictCursor};
 use shiguredo_postgres::datetime::{Date, Time, Timestamp, Timestamptz};
@@ -342,6 +343,58 @@ async fn test_type_conversions() {
         Value::Timestamptz(timestamptz),
         "timestamptz が一致しません"
     );
+}
+
+/// PostgreSQL 19 で追加された oid8 をサーバーとの往復で u64 として扱えることを確認する。
+///
+/// 19 より前のサーバーには oid8 型がないため、型がないことだけを確かめる。
+#[tokio::test]
+async fn test_oid8_conversion() {
+    helpers::init_tracing();
+    let (options, _node) = helpers::build_postgres_options().await;
+    let mut conn = helpers::connect(&options).await;
+
+    let row = conn
+        .query_one(
+            "SELECT current_setting('server_version_num')::int, to_regtype('oid8') IS NOT NULL",
+            &[],
+        )
+        .await
+        .expect("サーバーの版と型の有無を取得できません");
+    let version_num = row.get::<i32>(0).expect("版の番号を取得できません");
+    let has_oid8 = row.get::<bool>(1).expect("型の有無を取得できません");
+    assert_eq!(
+        has_oid8,
+        version_num >= 190000,
+        "oid8 型の有無がサーバーの版と一致しません: {version_num}"
+    );
+    if !has_oid8 {
+        return;
+    }
+
+    // 最大値は i64 に収まらず、符号なしの 10 進数で往復する。
+    let array = Value::Array {
+        element_type: oid::OID8,
+        values: vec![Value::Oid8(0), Value::Null, Value::Oid8(u64::MAX)],
+    };
+    let row = conn
+        .query_one(
+            "SELECT $1::oid8, $2::oid8[]",
+            &[Value::Oid8(u64::MAX), array.clone()],
+        )
+        .await
+        .expect("oid8 の往復に失敗しました");
+    assert_eq!(
+        row.value(0),
+        Some(&Value::Oid8(u64::MAX)),
+        "oid8 が一致しません"
+    );
+    assert_eq!(
+        row.get::<u64>(0).expect("oid8 を u64 として取得できません"),
+        u64::MAX,
+        "u64 として取得した oid8 が一致しません"
+    );
+    assert_eq!(row.value(1), Some(&array), "oid8 の配列が一致しません");
 }
 
 #[tokio::test]

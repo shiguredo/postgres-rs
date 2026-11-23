@@ -168,6 +168,11 @@ pub mod oid {
     pub const INT4: u32 = 23;
     /// oid 型 (オブジェクト識別子)。
     pub const OID: u32 = 26;
+    /// oid8 型 (64 ビットのオブジェクト識別子)。
+    ///
+    /// PostgreSQL 19 の src/include/catalog/pg_type.dat で追加された。
+    /// 19 より前のサーバーにはこの型がない。
+    pub const OID8: u32 = 6437;
     /// text 型 (可変長文字列)。
     pub const TEXT: u32 = 25;
     /// json 型 (テキスト形式の JSON)。
@@ -227,6 +232,8 @@ pub mod oid {
         pub const FLOAT8: u32 = 1022;
         /// oid 型の配列型の OID。
         pub const OID: u32 = 1028;
+        /// oid8 型の配列型の OID。PostgreSQL 19 で追加された。
+        pub const OID8: u32 = 6442;
         /// date 型の配列型の OID。
         pub const DATE: u32 = 1182;
         /// time 型の配列型の OID。
