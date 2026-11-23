@@ -3,7 +3,7 @@
 
 //! 接続設定に応じて TLS のサーバー証明書検証とクライアント認証を構成する。
 
-use super::{ConnectOptions, SslMode};
+use super::{ConnectOptions, SslMode, TlsVersion};
 use crate::error::{Error, Result};
 use rustls::client::WantsClientCert;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -59,7 +59,7 @@ pub(super) async fn build_tls_config(options: &ConnectOptions) -> Result<ClientC
     } else {
         None
     };
-    let config = configure_verifier(options.ssl_mode, roots)?;
+    let config = configure_verifier(options.ssl_mode, roots, &protocol_versions(options))?;
 
     if (options.ssl_cert.is_some()) != (options.ssl_key.is_some()) {
         return Err(Error::operational(
@@ -83,7 +83,29 @@ pub(super) async fn build_tls_config(options: &ConnectOptions) -> Result<ClientC
         Ok(config.with_no_client_auth())
     };
 
-    config.map_err(|e| Error::operational(format!("Failed to build TLS config: {}", e)))
+    let mut config =
+        config.map_err(|e| Error::operational(format!("Failed to build TLS config: {}", e)))?;
+    // PostgreSQL 19 文書 §31.1.2 Parameter Key Words の sslsni と同じく、既定で SNI を送り、
+    // 無効にした場合は送らない。rustls は IP アドレスの接続先には SNI を送らない。
+    config.enable_sni = options.ssl_sni;
+    Ok(config)
+}
+
+/// 接続設定の最小と最大の範囲に入る TLS のバージョンを返す。
+///
+/// 範囲が空にならないことは `Connection::connect` で検証済み。
+fn protocol_versions(options: &ConnectOptions) -> Vec<&'static rustls::SupportedProtocolVersion> {
+    let max = options
+        .ssl_max_protocol_version
+        .unwrap_or(TlsVersion::Tls13);
+    [
+        (TlsVersion::Tls12, &rustls::version::TLS12),
+        (TlsVersion::Tls13, &rustls::version::TLS13),
+    ]
+    .into_iter()
+    .filter(|(version, _)| (options.ssl_min_protocol_version..=max).contains(version))
+    .map(|(_, supported)| supported)
+    .collect()
 }
 
 /// クライアント秘密鍵を読み込む。
@@ -117,11 +139,12 @@ fn client_private_key(data: &[u8]) -> Result<PrivateKeyDer<'static>> {
 fn configure_verifier(
     mode: SslMode,
     roots: Option<RootCertStore>,
+    versions: &[&'static rustls::SupportedProtocolVersion],
 ) -> Result<ConfigBuilder<ClientConfig, WantsClientCert>> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let algorithms = provider.signature_verification_algorithms;
     let builder = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
+        .with_protocol_versions(versions)
         .map_err(|error| {
             Error::operational(format!(
                 "Failed to configure TLS protocol versions: {error}"
@@ -302,7 +325,7 @@ mod tests {
                 ),
                 (SslMode::Required, None, "wrong.example.invalid", true),
             ] {
-                let config = configure_verifier(mode, roots.cloned())
+                let config = configure_verifier(mode, roots.cloned(), rustls::DEFAULT_VERSIONS)
                     .expect("検証対象のクライアントを設定できません")
                     .with_no_client_auth();
                 let client = tokio_rustls::TlsConnector::from(Arc::new(config));
@@ -488,12 +511,16 @@ mod tests {
             };
             assert_eq!(kind, expected, "{label} の鍵の形式が異なります");
 
-            let config = configure_verifier(SslMode::VerifyFull, Some(roots.clone()))
-                .expect("検証対象のクライアントを設定できません")
-                .with_client_auth_cert(vec![cert.der().clone()], key)
-                .unwrap_or_else(|error| {
-                    panic!("{label} の鍵をクライアント認証に設定できません: {error}")
-                });
+            let config = configure_verifier(
+                SslMode::VerifyFull,
+                Some(roots.clone()),
+                rustls::DEFAULT_VERSIONS,
+            )
+            .expect("検証対象のクライアントを設定できません")
+            .with_client_auth_cert(vec![cert.der().clone()], key)
+            .unwrap_or_else(|error| {
+                panic!("{label} の鍵をクライアント認証に設定できません: {error}")
+            });
             let client = tokio_rustls::TlsConnector::from(Arc::new(config));
             let name = server_name_from_host("db.example.invalid")
                 .expect("検証対象の名前を設定できません");
@@ -531,6 +558,140 @@ mod tests {
             let error =
                 client_private_key(&data).expect_err("使える鍵がないのに読み込みに成功しました");
             assert_eq!(error.message(), expected, "{label} のエラーが異なります");
+        }
+    }
+
+    /// 試験で書き出したファイル。破棄するときに削除する。
+    struct TemporaryFile(std::path::PathBuf);
+
+    impl TemporaryFile {
+        /// 一時ディレクトリに重ならない名前でファイルを書き出す。
+        fn write(label: &str, contents: &[u8]) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("現在時刻が UNIX 時刻より前です")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "postgres-rs-{label}-{}-{nanos}.pem",
+                std::process::id()
+            ));
+            std::fs::write(&path, contents).expect("一時ファイルを書き出せません");
+            Self(path)
+        }
+    }
+
+    impl Drop for TemporaryFile {
+        fn drop(&mut self) {
+            // 削除できなくても試験の結果には影響しないため、エラーは無視する。
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_protocol_versions_and_sni() {
+        // 接続設定から build_tls_config で作った設定で実際にハンドシェイクし、
+        // 交渉した TLS のバージョンとサーバーに届いた SNI を確かめる。
+        let mut ca_params = rcgen::CertificateParams::default();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .key_usages
+            .push(rcgen::KeyUsagePurpose::KeyCertSign);
+        let ca_key = rcgen::KeyPair::generate().expect("検証用 CA の鍵を生成できません");
+        let ca = ca_params
+            .self_signed(&ca_key)
+            .expect("検証用 CA を作成できません");
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let server_key = rcgen::KeyPair::generate().expect("検証用サーバーの鍵を生成できません");
+        let server_cert = rcgen::CertificateParams::new(vec!["db.example.invalid".to_owned()])
+            .expect("検証用サーバー名を設定できません")
+            .signed_by(&server_key, &issuer)
+            .expect("検証用サーバー証明書を署名できません");
+        let ca_file = TemporaryFile::write("ca", &pem("CERTIFICATE", ca.der()));
+        let server_for = |versions: &[&'static rustls::SupportedProtocolVersion]| {
+            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+            let config = rustls::ServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(versions)
+                .expect("検証対象の TLS バージョンを設定できません")
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![server_cert.der().clone()],
+                    PrivatePkcs8KeyDer::from(server_key.serialize_der()).into(),
+                )
+                .expect("サーバー証明書と鍵を設定できません");
+            tokio_rustls::TlsAcceptor::from(Arc::new(config))
+        };
+        let both = server_for(rustls::DEFAULT_VERSIONS);
+        let tls12_only = server_for(&[&rustls::version::TLS12]);
+
+        for (server, min, max, sni, expected_version, expected_sni) in [
+            (
+                &both,
+                TlsVersion::Tls12,
+                None,
+                true,
+                Some(rustls::ProtocolVersion::TLSv1_3),
+                Some("db.example.invalid"),
+            ),
+            (
+                &both,
+                TlsVersion::Tls12,
+                Some(TlsVersion::Tls12),
+                true,
+                Some(rustls::ProtocolVersion::TLSv1_2),
+                Some("db.example.invalid"),
+            ),
+            (
+                &both,
+                TlsVersion::Tls13,
+                None,
+                false,
+                Some(rustls::ProtocolVersion::TLSv1_3),
+                None,
+            ),
+            // TLS 1.2 だけのサーバーに TLS 1.3 以上を求めると確立しない。
+            (&tls12_only, TlsVersion::Tls13, None, true, None, None),
+        ] {
+            let options = ConnectOptions {
+                host: "db.example.invalid".to_owned(),
+                ssl_mode: SslMode::VerifyFull,
+                ssl_ca: Some(ca_file.0.to_string_lossy().into_owned()),
+                ssl_min_protocol_version: min,
+                ssl_max_protocol_version: max,
+                ssl_sni: sni,
+                ..ConnectOptions::default()
+            };
+            let config = build_tls_config(&options)
+                .await
+                .expect("TLS の設定を作れません");
+            let client = tokio_rustls::TlsConnector::from(Arc::new(config));
+            let name =
+                server_name_from_host(&options.host).expect("検証対象の名前を設定できません");
+            let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+            let (client_result, server_result) =
+                tokio::join!(client.connect(name, client_io), server.accept(server_io));
+            let label = format!("{min:?}..{max:?} / sni={sni}");
+            let Some(expected_version) = expected_version else {
+                assert!(
+                    client_result.is_err(),
+                    "{label} で範囲外の TLS バージョンのまま確立しました"
+                );
+                continue;
+            };
+            let client_stream = client_result
+                .unwrap_or_else(|error| panic!("{label} で TLS を確立できません: {error}"));
+            let server_stream = server_result.unwrap_or_else(|error| {
+                panic!("{label} でサーバーが TLS を確立できません: {error}")
+            });
+            assert_eq!(
+                client_stream.get_ref().1.protocol_version(),
+                Some(expected_version),
+                "{label} で交渉した TLS バージョンが異なります"
+            );
+            assert_eq!(
+                server_stream.get_ref().1.server_name(),
+                expected_sni,
+                "{label} でサーバーに届いた SNI が異なります"
+            );
         }
     }
 }

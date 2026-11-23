@@ -88,6 +88,14 @@ pub struct ConnectOptions {
     pub ssl_cert: Option<String>,
     /// クライアント秘密鍵のファイルパス。
     pub ssl_key: Option<String>,
+    /// 許可する TLS の最小バージョン。既定は TLS 1.2 (libpq の既定と同じ)。
+    pub ssl_min_protocol_version: TlsVersion,
+    /// 許可する TLS の最大バージョン。`None` の場合は上限を設けない。
+    pub ssl_max_protocol_version: Option<TlsVersion>,
+    /// TLS の Server Name Indication (SNI) で接続先のホスト名を送るかどうか。既定は `true`。
+    ///
+    /// SNI のホスト名は暗号化されずに流れる。接続先が IP アドレスの場合は値によらず送らない。
+    pub ssl_sni: bool,
     /// OAuth のアクセストークン。
     ///
     /// サーバーが OAUTHBEARER メカニズムを提供している場合に使う。
@@ -126,6 +134,9 @@ impl std::fmt::Debug for ConnectOptions {
             .field("port", &self.port)
             .field("connect_timeout", &self.connect_timeout)
             .field("ssl_mode", &self.ssl_mode)
+            .field("ssl_min_protocol_version", &self.ssl_min_protocol_version)
+            .field("ssl_max_protocol_version", &self.ssl_max_protocol_version)
+            .field("ssl_sni", &self.ssl_sni)
             .field("allow_insecure_remote", &self.allow_insecure_remote)
             .field("keepalives", &self.keepalives)
             .field("keepalives_idle", &self.keepalives_idle)
@@ -160,6 +171,9 @@ impl Default for ConnectOptions {
             ssl_ca: None,
             ssl_cert: None,
             ssl_key: None,
+            ssl_min_protocol_version: TlsVersion::Tls12,
+            ssl_max_protocol_version: None,
+            ssl_sni: true,
             oauth_token: None,
             runtime_params: Vec::new(),
             max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
@@ -288,7 +302,9 @@ impl ConnectOptions {
     /// 対応するキー:
     /// `host` / `port` / `dbname` / `database` / `user` / `password` /
     /// `application_name` / `connect_timeout` (秒) / `sslmode` /
-    /// `sslrootcert` / `sslcert` / `sslkey` / `allow_insecure_remote` (`true` または `false`) /
+    /// `sslrootcert` / `sslcert` / `sslkey` / `sslsni` (`0` または `1`) /
+    /// `ssl_min_protocol_version` / `ssl_max_protocol_version` (`TLSv1.2` または `TLSv1.3`) /
+    /// `allow_insecure_remote` (`true` または `false`) /
     /// `keepalives` (0 は無効、それ以外は有効) / `keepalives_idle` (秒) /
     /// `keepalives_interval` (秒) / `keepalives_count` / `tcp_user_timeout` (ミリ秒)。
     /// キープアライブの調整値と `tcp_user_timeout` の 0 は OS の既定値を表す。
@@ -393,6 +409,36 @@ impl ConnectOptions {
             "sslrootcert" => self.ssl_ca = Some(value),
             "sslcert" => self.ssl_cert = Some(value),
             "sslkey" => self.ssl_key = Some(value),
+            // PostgreSQL 19 文書 §31.1.2 Parameter Key Words のとおり、sslsni は 1 で有効、0 で無効にする。
+            // libpq は先頭が 1 かどうかだけを見るが、ここでは 0 と 1 以外をエラーにする。
+            // TLS のバージョンは空文字列を指定なしとして扱う (fe-connect.c の sslVerifyProtocolVersion)。
+            // 将来 libpq の解釈が変わった場合はここを見直す。
+            "sslsni" => {
+                self.ssl_sni = match value.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    _ => {
+                        return Err(Error::interface(format!(
+                            "Invalid sslsni in {}",
+                            source.name()
+                        )));
+                    }
+                }
+            }
+            "ssl_min_protocol_version" => {
+                self.ssl_min_protocol_version = if value.is_empty() {
+                    TlsVersion::Tls12
+                } else {
+                    TlsVersion::from_str(&value)?
+                }
+            }
+            "ssl_max_protocol_version" => {
+                self.ssl_max_protocol_version = if value.is_empty() {
+                    None
+                } else {
+                    Some(TlsVersion::from_str(&value)?)
+                }
+            }
             // PostgreSQL 19 文書 §31.1.2 Parameter Key Words のとおり、keepalives は整数で
             // 0 以外を有効とし、ほかの 4 つは 0 を OS の既定値として扱う。単位は
             // keepalives_idle と keepalives_interval が秒、tcp_user_timeout がミリ秒。
@@ -664,6 +710,44 @@ impl FromStr for SslMode {
             _ => Err(Error::interface(
                 "Unsupported sslmode; use disable, require, verify-ca, or verify-full",
             )),
+        }
+    }
+}
+
+/// TLS のプロトコルバージョン。
+///
+/// rustls が対応する TLS 1.2 と TLS 1.3 だけを扱う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TlsVersion {
+    /// TLS 1.2。
+    Tls12,
+    /// TLS 1.3。
+    Tls13,
+}
+
+impl FromStr for TlsVersion {
+    type Err = Error;
+
+    /// libpq の ssl_min_protocol_version / ssl_max_protocol_version と同じ名前を受け付ける。
+    ///
+    /// 名前の大文字と小文字は区別しない。`TLSv1` と `TLSv1.1` はエラーにする。
+    fn from_str(s: &str) -> Result<Self> {
+        // PostgreSQL 19 の src/interfaces/libpq/fe-connect.c の sslVerifyProtocolVersion と同じく
+        // 大文字と小文字を区別せずに比べる。libpq は TLSv1 と TLSv1.1 も受け付けるが、rustls は
+        // TLS 1.2 より前に対応しないため、指定どおりにできないことをエラーで示す。
+        // 将来 libpq が受け付ける名前を変えた場合はここを見直す。
+        if s.eq_ignore_ascii_case("TLSv1.2") {
+            Ok(Self::Tls12)
+        } else if s.eq_ignore_ascii_case("TLSv1.3") {
+            Ok(Self::Tls13)
+        } else if s.eq_ignore_ascii_case("TLSv1") || s.eq_ignore_ascii_case("TLSv1.1") {
+            Err(Error::not_supported(
+                "TLS protocol versions older than TLSv1.2 are not supported",
+            ))
+        } else {
+            Err(Error::interface(
+                "Unsupported TLS protocol version; use TLSv1.2 or TLSv1.3",
+            ))
         }
     }
 }
@@ -1081,6 +1165,15 @@ impl Connection {
             ));
         }
         options.validate_tcp_settings()?;
+        // libpq の sslVerifyProtocolRange と同じく、最小が最大を超える範囲は接続前に拒否する。
+        if options
+            .ssl_max_protocol_version
+            .is_some_and(|max| options.ssl_min_protocol_version > max)
+        {
+            return Err(Error::interface(
+                "ssl_min_protocol_version must not be greater than ssl_max_protocol_version",
+            ));
+        }
         if options.oauth_token.is_some() && options.ssl_mode != SslMode::VerifyFull {
             return Err(Error::interface("OAuth requires sslmode=verify-full"));
         }
@@ -2865,6 +2958,66 @@ mod tests {
         assert!(ConnectOptions::from_url("postgres://host:abc/db").is_err());
         // 不正なパーセントエンコーディング。
         assert!(ConnectOptions::from_url("postgres://%zz@host/db").is_err());
+    }
+
+    /// sslsni と TLS のバージョンのキーを libpq と同じ名前で読み、範囲の誤りを接続前に拒否する。
+    #[test]
+    fn test_tls_settings_from_connection_string() {
+        let default = ConnectOptions::default();
+        assert_eq!(default.ssl_min_protocol_version, TlsVersion::Tls12);
+        assert_eq!(default.ssl_max_protocol_version, None);
+        assert!(default.ssl_sni, "SNI が既定で有効になっていません");
+
+        // バージョン名は大文字と小文字を区別しない。
+        let options = ConnectOptions::from_conninfo(
+            "host=db sslsni=0 ssl_min_protocol_version=tlsv1.3 ssl_max_protocol_version=TLSv1.3",
+        )
+        .expect("TLS の設定を含む接続文字列を読めません");
+        assert!(!options.ssl_sni, "sslsni=0 で無効になりません");
+        assert_eq!(options.ssl_min_protocol_version, TlsVersion::Tls13);
+        assert_eq!(options.ssl_max_protocol_version, Some(TlsVersion::Tls13));
+        // 空文字列は指定なしとして既定値に戻す。
+        let options = ConnectOptions::from_url(
+            "postgres://db?sslsni=1&ssl_min_protocol_version=&ssl_max_protocol_version=",
+        )
+        .expect("空の TLS バージョンを含む URL を読めません");
+        assert!(options.ssl_sni);
+        assert_eq!(options.ssl_min_protocol_version, TlsVersion::Tls12);
+        assert_eq!(options.ssl_max_protocol_version, None);
+
+        for (conninfo, expected) in [
+            ("sslsni=yes", "Invalid sslsni in connection string"),
+            (
+                "ssl_min_protocol_version=TLSv1.1",
+                "TLS protocol versions older than TLSv1.2 are not supported",
+            ),
+            (
+                "ssl_max_protocol_version=TLSv1",
+                "TLS protocol versions older than TLSv1.2 are not supported",
+            ),
+            (
+                "ssl_min_protocol_version=SSLv3",
+                "Unsupported TLS protocol version; use TLSv1.2 or TLSv1.3",
+            ),
+        ] {
+            let error = ConnectOptions::from_conninfo(conninfo)
+                .expect_err("不正な TLS の設定を受理しました");
+            assert_eq!(error.message(), expected, "{conninfo} のエラーが異なります");
+        }
+
+        // 最小が最大を超える範囲は、サーバーへ接続する前に拒否する。
+        let error = Connection::connect(ConnectOptions {
+            host: "db.example.com".into(),
+            ssl_min_protocol_version: TlsVersion::Tls13,
+            ssl_max_protocol_version: Some(TlsVersion::Tls12),
+            ..ConnectOptions::default()
+        })
+        .err()
+        .expect("空の TLS バージョンの範囲を受理しました");
+        assert_eq!(
+            error.message(),
+            "ssl_min_protocol_version must not be greater than ssl_max_protocol_version"
+        );
     }
 
     /// options を接続文字列と URL から読めることを確認する。

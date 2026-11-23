@@ -17,7 +17,7 @@ use shiguredo_postgres_core::connection::{AuthState, Connection as InnerConnecti
 // 利用者は shiguredo_postgres クレートだけに依存すればよい。
 // ドキュメントは sans I/O 実装側のものが引き継がれる。
 pub use shiguredo_postgres_core::connection::{
-    ConnectOptions, Notification, PreparedStatement, QueryResult, SslMode,
+    ConnectOptions, Notification, PreparedStatement, QueryResult, SslMode, TlsVersion,
 };
 use std::collections::HashMap;
 use std::io;

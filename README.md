@@ -78,6 +78,9 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
 - TLS
   - 既定は `sslmode=verify-full`
   - 開発用の平文接続は明示指定
+  - TLS 1.2 / 1.3 の範囲指定 (`ssl_min_protocol_version` / `ssl_max_protocol_version`)
+  - SNI の無効化 (`sslsni=0`)
+  - クライアント証明書 (秘密鍵は PKCS#8 / PKCS#1 / SEC1)
 - Unix ドメインソケット
 - 接続文字列
   - libpq 形式
