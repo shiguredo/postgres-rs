@@ -135,6 +135,8 @@ impl CancelToken {
         let mut stream = match self.target {
             CancelTarget::Tcp { addr, tls } => {
                 let mut plain = TcpStream::connect(addr).await.map_err(io_error)?;
+                // libpq と同じく、キャンセル要求の接続にも同じ TCP の設定を使う。
+                configure_tcp(&plain, &self.options)?;
                 if tls {
                     plain
                         .write_all(&crate::protocol::ssl_request_message())
@@ -1573,10 +1575,198 @@ async fn connect_stream(options: &ConnectOptions) -> Result<ConnectionStream> {
                 addr, e
             ))
         })?;
+    configure_tcp(&stream, options)?;
+    Ok(ConnectionStream::Plain(stream))
+}
+
+/// TCP ソケットに接続設定の TCP オプションを適用する。
+///
+/// 通常の接続とキャンセル要求の接続の両方で使う。値の組み合わせと範囲は
+/// `Connection::connect` で検証済みのため、ここでは OS が対応しているかだけを見る。
+fn configure_tcp(stream: &TcpStream, options: &ConnectOptions) -> Result<()> {
     stream
         .set_nodelay(true)
         .map_err(|e| Error::operational(format!("Failed to set TCP_NODELAY: {}", e)))?;
-    Ok(ConnectionStream::Plain(stream))
+    let socket = socket2::SockRef::from(stream);
+    // PostgreSQL 19 文書 §31.1.2 Parameter Key Words のとおり、キープアライブは既定で有効にし
+    // (src/interfaces/libpq/fe-connect.c の useKeepalives)、指定のない調整値は OS の既定値のままにする。
+    // libpq は対応していない OS では調整値を黙って無視するが、ここでは指定が効かないことをエラーにする。
+    // 将来 libpq の既定値や解釈が変わった場合はここを見直す。
+    if options.keepalives {
+        let tuned = options.keepalives_idle.is_some()
+            || options.keepalives_interval.is_some()
+            || options.keepalives_count.is_some();
+        if tuned {
+            socket
+                .set_tcp_keepalive(&tcp_keepalive(options)?)
+                .map_err(|e| Error::operational(format!("Failed to set TCP keepalive: {e}")))?;
+        } else {
+            socket
+                .set_keepalive(true)
+                .map_err(|e| Error::operational(format!("Failed to set SO_KEEPALIVE: {e}")))?;
+        }
+    }
+    if let Some(timeout) = options.tcp_user_timeout {
+        set_tcp_user_timeout(&socket, timeout)?;
+    }
+    Ok(())
+}
+
+/// キープアライブの調整値を組み立てる。
+fn tcp_keepalive(options: &ConnectOptions) -> Result<socket2::TcpKeepalive> {
+    let mut keepalive = socket2::TcpKeepalive::new();
+    // Windows は無通信時間と再送間隔を SIO_KEEPALIVE_VALS でまとめて設定するため、
+    // 片方だけを指定した場合はもう片方を libpq の pqSetKeepalivesWin32 と同じ既定値
+    // (2 時間と 1 秒) で補う。
+    #[cfg(windows)]
+    let (idle, interval) = (
+        Some(
+            options
+                .keepalives_idle
+                .unwrap_or(Duration::from_secs(2 * 60 * 60)),
+        ),
+        Some(
+            options
+                .keepalives_interval
+                .unwrap_or(Duration::from_secs(1)),
+        ),
+    );
+    #[cfg(not(windows))]
+    let (idle, interval) = (options.keepalives_idle, options.keepalives_interval);
+    if let Some(idle) = idle {
+        keepalive = with_keepalive_time(keepalive, idle)?;
+    }
+    if let Some(interval) = interval {
+        keepalive = with_keepalive_interval(keepalive, interval)?;
+    }
+    if let Some(count) = options.keepalives_count {
+        keepalive = with_keepalive_retries(keepalive, count)?;
+    }
+    Ok(keepalive)
+}
+
+/// 無通信時間を設定する (`TCP_KEEPIDLE` またはそれに相当するオプション)。
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+))]
+fn with_keepalive_time(
+    keepalive: socket2::TcpKeepalive,
+    idle: Duration,
+) -> Result<socket2::TcpKeepalive> {
+    Ok(keepalive.with_time(idle))
+}
+
+/// 無通信時間を設定できない OS ではエラーにする。
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+)))]
+fn with_keepalive_time(
+    _keepalive: socket2::TcpKeepalive,
+    _idle: Duration,
+) -> Result<socket2::TcpKeepalive> {
+    Err(Error::not_supported(
+        "keepalives_idle is not supported on this platform",
+    ))
+}
+
+/// 再送間隔を設定する (`TCP_KEEPINTVL` またはそれに相当するオプション)。
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+))]
+fn with_keepalive_interval(
+    keepalive: socket2::TcpKeepalive,
+    interval: Duration,
+) -> Result<socket2::TcpKeepalive> {
+    Ok(keepalive.with_interval(interval))
+}
+
+/// 再送間隔を設定できない OS ではエラーにする。
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+)))]
+fn with_keepalive_interval(
+    _keepalive: socket2::TcpKeepalive,
+    _interval: Duration,
+) -> Result<socket2::TcpKeepalive> {
+    Err(Error::not_supported(
+        "keepalives_interval is not supported on this platform",
+    ))
+}
+
+/// 切断と判断するまでの回数を設定する (`TCP_KEEPCNT`)。
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+))]
+fn with_keepalive_retries(
+    keepalive: socket2::TcpKeepalive,
+    count: u32,
+) -> Result<socket2::TcpKeepalive> {
+    Ok(keepalive.with_retries(count))
+}
+
+/// 切断と判断するまでの回数を設定できない OS ではエラーにする。
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    windows
+)))]
+fn with_keepalive_retries(
+    _keepalive: socket2::TcpKeepalive,
+    _count: u32,
+) -> Result<socket2::TcpKeepalive> {
+    Err(Error::not_supported(
+        "keepalives_count is not supported on this platform",
+    ))
+}
+
+/// 確認応答を待つ時間の上限を設定する (`TCP_USER_TIMEOUT`)。
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn set_tcp_user_timeout(socket: &socket2::SockRef<'_>, timeout: Duration) -> Result<()> {
+    socket
+        .set_tcp_user_timeout(Some(timeout))
+        .map_err(|e| Error::operational(format!("Failed to set TCP_USER_TIMEOUT: {e}")))
+}
+
+/// `TCP_USER_TIMEOUT` がない OS ではエラーにする。
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+fn set_tcp_user_timeout(_socket: &socket2::SockRef<'_>, _timeout: Duration) -> Result<()> {
+    Err(Error::not_supported(
+        "tcp_user_timeout is not supported on this platform",
+    ))
 }
 
 /// PostgreSQL サーバーと TLS ハンドシェイクを行う。
@@ -1589,4 +1779,141 @@ async fn establish_tls(plain: TcpStream, options: &ConnectOptions) -> Result<Con
         .await
         .map_err(|error| Error::operational(format!("TLS handshake failed: {error}")))?;
     Ok(ConnectionStream::Tls(Box::new(tls)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 実際の TCP 接続を作り、ソケットに設定されたオプションを読み戻す。
+    async fn connected_socket(
+        listener: &tokio::net::TcpListener,
+        options: ConnectOptions,
+    ) -> TcpStream {
+        let port = listener
+            .local_addr()
+            .expect("待ち受けアドレスを取得できません")
+            .port();
+        let options = ConnectOptions { port, ..options };
+        match connect_stream(&options)
+            .await
+            .expect("ローカルの待ち受けに接続できません")
+        {
+            ConnectionStream::Plain(stream) => stream,
+            _ => panic!("TCP 接続のはずが別の種類の接続になりました"),
+        }
+    }
+
+    /// キープアライブと TCP_USER_TIMEOUT の設定が、実際のソケットに反映されることを確認する。
+    #[tokio::test]
+    async fn test_connect_stream_applies_tcp_settings() {
+        // 接続はカーネルの待ち行列で確立するため、accept しなくてよい。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("ローカルで待ち受けできません");
+        let base = ConnectOptions {
+            host: "127.0.0.1".into(),
+            ssl_mode: SslMode::Disabled,
+            ..ConnectOptions::default()
+        };
+
+        // 既定ではキープアライブを有効にし、調整値は OS の既定値のままにする。
+        let stream = connected_socket(&listener, base.clone()).await;
+        let socket = socket2::SockRef::from(&stream);
+        assert!(
+            socket.keepalive().expect("SO_KEEPALIVE を読めません"),
+            "既定でキープアライブが有効になっていません"
+        );
+        assert!(
+            socket.tcp_nodelay().expect("TCP_NODELAY を読めません"),
+            "TCP_NODELAY が有効になっていません"
+        );
+
+        // keepalives=false ではキープアライブを有効にしない。
+        let stream = connected_socket(
+            &listener,
+            ConnectOptions {
+                keepalives: false,
+                ..base.clone()
+            },
+        )
+        .await;
+        assert!(
+            !socket2::SockRef::from(&stream)
+                .keepalive()
+                .expect("SO_KEEPALIVE を読めません"),
+            "keepalives=false なのにキープアライブが有効です"
+        );
+
+        // 調整値はそれぞれのソケットオプションに秒と回数で設定する。
+        let stream = connected_socket(
+            &listener,
+            ConnectOptions {
+                keepalives_idle: Some(Duration::from_secs(37)),
+                keepalives_interval: Some(Duration::from_secs(7)),
+                keepalives_count: Some(4),
+                ..base.clone()
+            },
+        )
+        .await;
+        let socket = socket2::SockRef::from(&stream);
+        assert!(socket.keepalive().expect("SO_KEEPALIVE を読めません"));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert_eq!(
+                socket
+                    .tcp_keepalive_time()
+                    .expect("キープアライブの無通信時間を読めません"),
+                Duration::from_secs(37)
+            );
+            assert_eq!(
+                socket
+                    .tcp_keepalive_interval()
+                    .expect("キープアライブの再送間隔を読めません"),
+                Duration::from_secs(7)
+            );
+            assert_eq!(
+                socket
+                    .tcp_keepalive_retries()
+                    .expect("キープアライブの回数を読めません"),
+                4
+            );
+        }
+
+        // TCP_USER_TIMEOUT は Linux と Android でだけ設定でき、ほかの OS ではエラーにする。
+        let options = ConnectOptions {
+            port: listener
+                .local_addr()
+                .expect("待ち受けアドレスを取得できません")
+                .port(),
+            tcp_user_timeout: Some(Duration::from_millis(1500)),
+            ..base
+        };
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        {
+            let ConnectionStream::Plain(stream) = connect_stream(&options)
+                .await
+                .expect("tcp_user_timeout を指定した接続に失敗しました")
+            else {
+                panic!("TCP 接続のはずが別の種類の接続になりました");
+            };
+            assert_eq!(
+                socket2::SockRef::from(&stream)
+                    .tcp_user_timeout()
+                    .expect("TCP_USER_TIMEOUT を読めません"),
+                Some(Duration::from_millis(1500))
+            );
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux")))]
+        {
+            let error = match connect_stream(&options).await {
+                Ok(_) => panic!("対応していない OS で tcp_user_timeout を受け付けました"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.message(),
+                "tcp_user_timeout is not supported on this platform"
+            );
+        }
+    }
 }

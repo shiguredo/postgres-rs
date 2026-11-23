@@ -704,6 +704,7 @@ dependencies = [
  "rustls-platform-verifier",
  "shiguredo_container",
  "shiguredo_postgres_core",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "tracing",

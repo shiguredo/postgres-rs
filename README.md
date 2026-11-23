@@ -63,6 +63,7 @@ PostgreSQL 16 / 17 / 18 / 19 で動作を確認しています。
   - 別タスクからのキャンセル (`CancelToken`)
 - 接続設定
   - 起動パラメーター (`search_path` 等)
+  - TCP キープアライブ (既定で有効) と `tcp_user_timeout`
 - 認証
   - SCRAM-SHA-256
   - サーバー側で認証要求を省略する方式

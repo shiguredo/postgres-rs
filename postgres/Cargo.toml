@@ -16,6 +16,8 @@ rustls-native-certs = "0.8"
 rustls-platform-verifier = "0.7"
 # Sans I/O な PostgreSQL プロトコル実装
 shiguredo_postgres_core = { path = "../postgres-core" }
+# TCP キープアライブの詳細と TCP_USER_TIMEOUT をソケットに設定する (tokio も同じ版を使う)
+socket2 = { version = "0.6", features = ["all"] }
 # 非同期ランタイムおよび TCP/TLS ストリーム処理
 tokio = { version = "1.54", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 # TLS 接続（tokio 上で rustls を動作させる）

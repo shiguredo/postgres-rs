@@ -52,6 +52,32 @@ pub struct ConnectOptions {
     pub connect_timeout: Duration,
     /// SSL 接続モード。
     pub ssl_mode: SslMode,
+    /// TCP キープアライブを使うかどうか。既定は `true`。
+    ///
+    /// Unix ドメインソケットの接続には関係しない。`false` の場合は
+    /// `keepalives_idle`、`keepalives_interval`、`keepalives_count` を指定できない。
+    pub keepalives: bool,
+    /// 無通信の状態が続いてからキープアライブを送り始めるまでの時間。
+    ///
+    /// `None` の場合は OS の既定値を使う。1 秒以上の秒単位で指定する。
+    /// Unix ドメインソケットの接続では指定できない。
+    pub keepalives_idle: Option<Duration>,
+    /// 応答のないキープアライブを再送するまでの間隔。
+    ///
+    /// `None` の場合は OS の既定値を使う。1 秒以上の秒単位で指定する。
+    /// Unix ドメインソケットの接続では指定できない。
+    pub keepalives_interval: Option<Duration>,
+    /// 接続が切れたと判断するまでに失ってよいキープアライブの数。
+    ///
+    /// `None` の場合は OS の既定値を使う。1 以上を指定する。
+    /// Unix ドメインソケットの接続では指定できない。
+    pub keepalives_count: Option<u32>,
+    /// 送信したデータの確認応答を待つ時間の上限 (`TCP_USER_TIMEOUT`)。
+    ///
+    /// 超えると接続を閉じる。`None` の場合は OS の既定値を使う。
+    /// 1 ミリ秒以上のミリ秒単位で指定する。Linux と Android でだけ使え、
+    /// ほかの OS や Unix ドメインソケットの接続では接続時にエラーになる。
+    pub tcp_user_timeout: Option<Duration>,
     /// 開発用。`sslmode=disable` でローカル以外の TCP 接続を明示的に許可する。
     ///
     /// 通信は保護されない。平文パスワードと OAuth トークンはこの経路では送信しない。
@@ -93,6 +119,11 @@ impl std::fmt::Debug for ConnectOptions {
             .field("connect_timeout", &self.connect_timeout)
             .field("ssl_mode", &self.ssl_mode)
             .field("allow_insecure_remote", &self.allow_insecure_remote)
+            .field("keepalives", &self.keepalives)
+            .field("keepalives_idle", &self.keepalives_idle)
+            .field("keepalives_interval", &self.keepalives_interval)
+            .field("keepalives_count", &self.keepalives_count)
+            .field("tcp_user_timeout", &self.tcp_user_timeout)
             .field("max_message_size", &self.max_message_size)
             .field("statement_cache_capacity", &self.statement_cache_capacity)
             .field("runtime_param_count", &self.runtime_params.len())
@@ -111,6 +142,11 @@ impl Default for ConnectOptions {
             application_name: None,
             connect_timeout: Duration::from_secs(10),
             ssl_mode: SslMode::VerifyFull,
+            keepalives: true,
+            keepalives_idle: None,
+            keepalives_interval: None,
+            keepalives_count: None,
+            tcp_user_timeout: None,
             allow_insecure_remote: false,
             ssl_ca: None,
             ssl_cert: None,
@@ -132,6 +168,57 @@ impl ConnectOptions {
                 .host
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback())
+    }
+
+    /// TCP キープアライブと `tcp_user_timeout` の設定を検証する。
+    ///
+    /// libpq は Unix ドメインソケットや `keepalives=0` のときに調整値を黙って無視するが、
+    /// 指定が効かない組み合わせは誤りとしてエラーにする。値はソケットオプションに
+    /// 渡す単位 (秒またはミリ秒) の整数で、C の `int` に収まる範囲に限る。
+    fn validate_tcp_settings(&self) -> Result<()> {
+        let tuned = self.keepalives_idle.is_some()
+            || self.keepalives_interval.is_some()
+            || self.keepalives_count.is_some();
+        if self.host.starts_with('/') && (tuned || self.tcp_user_timeout.is_some()) {
+            return Err(Error::interface(
+                "TCP keepalive and tcp_user_timeout settings cannot be used with Unix domain sockets",
+            ));
+        }
+        if !self.keepalives && tuned {
+            return Err(Error::interface(
+                "keepalives_idle, keepalives_interval and keepalives_count require keepalives",
+            ));
+        }
+        let max = u64::from(i32::MAX.unsigned_abs());
+        for (name, value) in [
+            ("keepalives_idle", self.keepalives_idle),
+            ("keepalives_interval", self.keepalives_interval),
+        ] {
+            if let Some(value) = value
+                && (value.subsec_nanos() != 0 || value.as_secs() == 0 || value.as_secs() > max)
+            {
+                return Err(Error::interface(format!(
+                    "{name} must be a whole number of seconds between 1 and {max}"
+                )));
+            }
+        }
+        if let Some(count) = self.keepalives_count
+            && (count == 0 || u64::from(count) > max)
+        {
+            return Err(Error::interface(format!(
+                "keepalives_count must be between 1 and {max}"
+            )));
+        }
+        if let Some(timeout) = self.tcp_user_timeout
+            && (timeout.subsec_nanos() % 1_000_000 != 0
+                || timeout.as_millis() == 0
+                || timeout.as_millis() > u128::from(max))
+        {
+            return Err(Error::interface(format!(
+                "tcp_user_timeout must be a whole number of milliseconds between 1 and {max}"
+            )));
+        }
+        Ok(())
     }
 
     /// 起動時に送る追加パラメーターを検証する。
@@ -192,7 +279,10 @@ impl ConnectOptions {
     /// 対応するキー:
     /// `host` / `port` / `dbname` / `database` / `user` / `password` /
     /// `application_name` / `connect_timeout` (秒) / `sslmode` /
-    /// `sslrootcert` / `sslcert` / `sslkey` / `allow_insecure_remote` (`true` または `false`)。
+    /// `sslrootcert` / `sslcert` / `sslkey` / `allow_insecure_remote` (`true` または `false`) /
+    /// `keepalives` (0 は無効、それ以外は有効) / `keepalives_idle` (秒) /
+    /// `keepalives_interval` (秒) / `keepalives_count` / `tcp_user_timeout` (ミリ秒)。
+    /// キープアライブの調整値と `tcp_user_timeout` の 0 は OS の既定値を表す。
     /// 未対応のキーは黙って無視せずエラーにする。
     /// 追加の起動パラメーター ([`ConnectOptions::runtime_params`]) は
     /// 接続文字列では指定できない。API から設定する。
@@ -292,10 +382,46 @@ impl ConnectOptions {
             "sslrootcert" => self.ssl_ca = Some(value),
             "sslcert" => self.ssl_cert = Some(value),
             "sslkey" => self.ssl_key = Some(value),
+            // PostgreSQL 19 文書 §31.1.2 Parameter Key Words のとおり、keepalives は整数で
+            // 0 以外を有効とし、ほかの 4 つは 0 を OS の既定値として扱う。単位は
+            // keepalives_idle と keepalives_interval が秒、tcp_user_timeout がミリ秒。
+            // libpq は負の値を 0 と同じに扱うが、ここでは指定の誤りとしてエラーにする。
+            // 将来 libpq の解釈が変わった場合はここを見直す。
+            "keepalives" => {
+                let value: i32 = value.parse().map_err(|_| {
+                    Error::interface(format!("Invalid keepalives in {}", source.name()))
+                })?;
+                self.keepalives = value != 0;
+            }
+            "keepalives_idle" => {
+                self.keepalives_idle = parse_tcp_setting(key, &value, source)?
+                    .map(|seconds| Duration::from_secs(u64::from(seconds)))
+            }
+            "keepalives_interval" => {
+                self.keepalives_interval = parse_tcp_setting(key, &value, source)?
+                    .map(|seconds| Duration::from_secs(u64::from(seconds)))
+            }
+            "keepalives_count" => self.keepalives_count = parse_tcp_setting(key, &value, source)?,
+            "tcp_user_timeout" => {
+                self.tcp_user_timeout = parse_tcp_setting(key, &value, source)?
+                    .map(|millis| Duration::from_millis(u64::from(millis)))
+            }
             _ => return Err(Error::interface(source.unsupported_message())),
         }
         Ok(())
     }
+}
+
+/// TCP の設定値 (0 以上の整数) を解釈する。0 は OS の既定値を表す `None` にする。
+///
+/// 値の範囲は libpq と同じく C の `int` に収まる範囲とする。
+fn parse_tcp_setting(key: &str, value: &str, source: OptionSource) -> Result<Option<u32>> {
+    let value: i32 = value
+        .parse()
+        .ok()
+        .filter(|value| *value >= 0)
+        .ok_or_else(|| Error::interface(format!("Invalid {key} in {}", source.name())))?;
+    Ok((value > 0).then(|| value.unsigned_abs()))
 }
 
 /// 接続オプションを指定した文字列の形式。エラーメッセージの表記を分けるために使う。
@@ -942,6 +1068,7 @@ impl Connection {
                 "allow_insecure_remote requires sslmode=disable",
             ));
         }
+        options.validate_tcp_settings()?;
         if options.oauth_token.is_some() && options.ssl_mode != SslMode::VerifyFull {
             return Err(Error::interface("OAuth requires sslmode=verify-full"));
         }
@@ -2726,5 +2853,193 @@ mod tests {
         assert!(ConnectOptions::from_url("postgres://host:abc/db").is_err());
         // 不正なパーセントエンコーディング。
         assert!(ConnectOptions::from_url("postgres://%zz@host/db").is_err());
+    }
+
+    /// キープアライブと tcp_user_timeout のキーを libpq と同じ単位で解釈することを確認する。
+    #[test]
+    fn test_tcp_settings_from_connection_string() {
+        let default = ConnectOptions::default();
+        assert!(
+            default.keepalives,
+            "キープアライブが既定で有効になっていません"
+        );
+        assert_eq!(default.keepalives_idle, None);
+        assert_eq!(default.tcp_user_timeout, None);
+
+        // 秒、秒、回数、ミリ秒の順に解釈する。接続文字列と URL で結果は同じになる。
+        let conninfo = ConnectOptions::from_conninfo(
+            "host=db.example.com keepalives=1 keepalives_idle=30 keepalives_interval=5 keepalives_count=3 tcp_user_timeout=1500",
+        )
+        .expect("TCP の設定を含む接続文字列を読めません");
+        let url = ConnectOptions::from_url(
+            "postgres://db.example.com?keepalives=1&keepalives_idle=30&keepalives_interval=5&keepalives_count=3&tcp_user_timeout=1500",
+        )
+        .expect("TCP の設定を含む URL を読めません");
+        for options in [conninfo, url] {
+            assert!(options.keepalives);
+            assert_eq!(options.keepalives_idle, Some(Duration::from_secs(30)));
+            assert_eq!(options.keepalives_interval, Some(Duration::from_secs(5)));
+            assert_eq!(options.keepalives_count, Some(3));
+            assert_eq!(options.tcp_user_timeout, Some(Duration::from_millis(1500)));
+        }
+
+        // keepalives は 0 以外を有効とする。調整値の 0 は OS の既定値を表す。
+        let options = ConnectOptions::from_conninfo(
+            "keepalives=0 keepalives_idle=0 keepalives_interval=0 keepalives_count=0 tcp_user_timeout=0",
+        )
+        .expect("0 を指定した接続文字列を読めません");
+        assert!(!options.keepalives, "keepalives=0 で無効になりません");
+        assert_eq!(options.keepalives_idle, None);
+        assert_eq!(options.keepalives_interval, None);
+        assert_eq!(options.keepalives_count, None);
+        assert_eq!(options.tcp_user_timeout, None);
+        assert!(
+            ConnectOptions::from_conninfo("keepalives=2")
+                .expect("keepalives=2 を読めません")
+                .keepalives,
+            "0 以外の keepalives で有効になりません"
+        );
+
+        // 負の値、整数でない値、int に収まらない値はエラーにする。
+        for (conninfo, expected) in [
+            ("keepalives=on", "Invalid keepalives in connection string"),
+            (
+                "keepalives_idle=-1",
+                "Invalid keepalives_idle in connection string",
+            ),
+            (
+                "keepalives_interval=1.5",
+                "Invalid keepalives_interval in connection string",
+            ),
+            (
+                "keepalives_count=2147483648",
+                "Invalid keepalives_count in connection string",
+            ),
+            (
+                "tcp_user_timeout=abc",
+                "Invalid tcp_user_timeout in connection string",
+            ),
+        ] {
+            let error = ConnectOptions::from_conninfo(conninfo)
+                .expect_err("不正な TCP の設定を受理しました");
+            assert_eq!(error.message(), expected, "{conninfo} のエラーが異なります");
+        }
+        let error = ConnectOptions::from_url("postgres://host?keepalives_idle=-1")
+            .expect_err("URL の不正な TCP の設定を受理しました");
+        assert_eq!(error.message(), "Invalid keepalives_idle in URL");
+    }
+
+    /// 効かない組み合わせや範囲外の TCP の設定を、接続前にエラーにすることを確認する。
+    #[test]
+    fn test_tcp_settings_validation() {
+        let tcp = || ConnectOptions {
+            host: "db.example.com".into(),
+            ..ConnectOptions::default()
+        };
+        assert!(
+            Connection::connect(ConnectOptions {
+                keepalives_idle: Some(Duration::from_secs(30)),
+                keepalives_interval: Some(Duration::from_secs(5)),
+                keepalives_count: Some(3),
+                tcp_user_timeout: Some(Duration::from_millis(1500)),
+                ..tcp()
+            })
+            .is_ok(),
+            "正しい TCP の設定が拒否されました"
+        );
+        let cases = [
+            (
+                ConnectOptions {
+                    host: "/tmp".into(),
+                    ssl_mode: SslMode::Disabled,
+                    keepalives_idle: Some(Duration::from_secs(30)),
+                    ..ConnectOptions::default()
+                },
+                "TCP keepalive and tcp_user_timeout settings cannot be used with Unix domain sockets",
+            ),
+            (
+                ConnectOptions {
+                    host: "/tmp".into(),
+                    ssl_mode: SslMode::Disabled,
+                    tcp_user_timeout: Some(Duration::from_millis(1500)),
+                    ..ConnectOptions::default()
+                },
+                "TCP keepalive and tcp_user_timeout settings cannot be used with Unix domain sockets",
+            ),
+            (
+                ConnectOptions {
+                    keepalives: false,
+                    keepalives_count: Some(3),
+                    ..tcp()
+                },
+                "keepalives_idle, keepalives_interval and keepalives_count require keepalives",
+            ),
+            (
+                ConnectOptions {
+                    keepalives_idle: Some(Duration::ZERO),
+                    ..tcp()
+                },
+                "keepalives_idle must be a whole number of seconds between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    keepalives_interval: Some(Duration::from_millis(1500)),
+                    ..tcp()
+                },
+                "keepalives_interval must be a whole number of seconds between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    keepalives_idle: Some(Duration::from_secs(1 << 31)),
+                    ..tcp()
+                },
+                "keepalives_idle must be a whole number of seconds between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    keepalives_count: Some(0),
+                    ..tcp()
+                },
+                "keepalives_count must be between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    keepalives_count: Some(1 << 31),
+                    ..tcp()
+                },
+                "keepalives_count must be between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    tcp_user_timeout: Some(Duration::from_micros(1500)),
+                    ..tcp()
+                },
+                "tcp_user_timeout must be a whole number of milliseconds between 1 and 2147483647",
+            ),
+            (
+                ConnectOptions {
+                    tcp_user_timeout: Some(Duration::ZERO),
+                    ..tcp()
+                },
+                "tcp_user_timeout must be a whole number of milliseconds between 1 and 2147483647",
+            ),
+        ];
+        for (options, expected) in cases {
+            let error = Connection::connect(options)
+                .err()
+                .expect("不正な TCP の設定を受理しました");
+            assert_eq!(error.message(), expected);
+        }
+        // keepalives=false だけなら、Unix ドメインソケットでも受け付ける。
+        assert!(
+            Connection::connect(ConnectOptions {
+                host: "/tmp".into(),
+                ssl_mode: SslMode::Disabled,
+                keepalives: false,
+                ..ConnectOptions::default()
+            })
+            .is_ok(),
+            "Unix ドメインソケットで keepalives=false が拒否されました"
+        );
     }
 }
