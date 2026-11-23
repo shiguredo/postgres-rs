@@ -10,13 +10,15 @@
 use crate::converters::Value;
 use crate::error::{Error, Result};
 use crate::protocol::FieldDescription;
+use std::sync::Arc;
 
 /// クエリ結果の 1 行。
 ///
 /// 列の並びは結果セットのフィールド順で、NULL は [`Value::Null`] として保持する。
 #[derive(Debug, Clone)]
 pub struct Row {
-    fields: Vec<FieldDescription>,
+    /// 結果セットのフィールド情報。同じ結果セットの行どうしで共有する。
+    fields: Arc<[FieldDescription]>,
     values: Vec<Value>,
 }
 
@@ -24,7 +26,7 @@ impl Row {
     /// 行を組み立てる。
     ///
     /// `fields` と `values` の要素数は一致している必要がある。
-    pub(crate) fn new(fields: Vec<FieldDescription>, values: Vec<Value>) -> Self {
+    pub(crate) fn new(fields: Arc<[FieldDescription]>, values: Vec<Value>) -> Self {
         debug_assert_eq!(
             fields.len(),
             values.len(),
@@ -163,7 +165,7 @@ mod tests {
     #[test]
     fn test_get_by_index_and_name() {
         let row = Row::new(
-            vec![field("id", 23), field("name", 25), field("note", 25)],
+            vec![field("id", 23), field("name", 25), field("note", 25)].into(),
             vec![
                 Value::Int4(42),
                 Value::Text("postgres".to_string()),
@@ -195,7 +197,7 @@ mod tests {
     /// 範囲外の列番号と存在しない列名がエラーになることを確認する。
     #[test]
     fn test_missing_column_is_an_error() {
-        let row = Row::new(vec![field("id", 23)], vec![Value::Int4(1)]);
+        let row = Row::new(vec![field("id", 23)].into(), vec![Value::Int4(1)]);
 
         assert!(row.get::<i32>(1).is_err(), "範囲外の列番号が受理されました");
         assert!(

@@ -115,6 +115,51 @@ async fn test_query_opt_accepts_zero_or_one_row() {
     );
 }
 
+/// 複数行の結果をすべて Row として取得し、列名から型付きで読めることを確認する。
+#[tokio::test]
+async fn test_query_all_reads_every_row() {
+    helpers::init_tracing();
+    let (options, _node) = helpers::build_postgres_options().await;
+    let mut conn = helpers::connect(&options).await;
+
+    let rows = conn
+        .query_all(
+            "SELECT n AS id, 'row ' || n AS label FROM generate_series(1, $1::int4) AS n ORDER BY n",
+            &[shiguredo_postgres::converters::Value::Int4(3)],
+        )
+        .await
+        .expect("複数行の取得に失敗しました");
+    let read: Vec<(i32, String)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.get_by_name::<i32>("id").expect("id を取得できません"),
+                row.get_by_name::<String>("label")
+                    .expect("label を取得できません"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        vec![
+            (1, "row 1".to_string()),
+            (2, "row 2".to_string()),
+            (3, "row 3".to_string())
+        ],
+        "取得した行が一致しません"
+    );
+
+    // 0 行の結果は空の一覧になり、続けて同じ接続を使える。
+    assert!(
+        conn.query_all("SELECT 1 WHERE false", &[])
+            .await
+            .expect("0 行の取得に失敗しました")
+            .is_empty(),
+        "0 行の結果が空になりません"
+    );
+    conn.ping().await.expect("取得後の ping に失敗しました");
+}
+
 #[tokio::test]
 async fn test_row_type_mismatch_is_an_error() {
     helpers::init_tracing();

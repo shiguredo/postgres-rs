@@ -817,7 +817,7 @@ impl Connection {
         let count = rows.len();
         match count {
             1 => Ok(crate::row::Row::new(
-                fields,
+                fields.into(),
                 rows.into_iter()
                     .next()
                     .expect("Rows has exactly one element as checked above"),
@@ -843,7 +843,7 @@ impl Connection {
         match count {
             0 => Ok(None),
             1 => Ok(Some(crate::row::Row::new(
-                fields,
+                fields.into(),
                 rows.into_iter()
                     .next()
                     .expect("Rows has exactly one element as checked above"),
@@ -852,6 +852,22 @@ impl Connection {
                 "Query returned {count} rows but at most one was expected"
             ))),
         }
+    }
+
+    /// クエリを実行し、すべての行を取得する。
+    ///
+    /// 結果をすべて受信してから返す。行数を検査する場合は [`Connection::query_one`] か
+    /// [`Connection::query_opt`] を使う。大きな結果を 1 行ずつ処理する場合は、
+    /// `unbuffered = true` で実行して [`Connection::next_row`] を使う。
+    pub async fn query_all(&mut self, sql: &str, args: &[Value]) -> Result<Vec<crate::row::Row>> {
+        self.execute(sql, args, false).await?;
+        let (fields, rows) = self.take_result_rows()?;
+        // 列の情報は行ごとに複製せず、同じ結果セットの行で共有する。
+        let fields: Arc<[crate::protocol::FieldDescription]> = fields.into();
+        Ok(rows
+            .into_iter()
+            .map(|values| crate::row::Row::new(Arc::clone(&fields), values))
+            .collect())
     }
 
     /// 実行済みの結果セットを取り出し、フィールドと行に分ける。
