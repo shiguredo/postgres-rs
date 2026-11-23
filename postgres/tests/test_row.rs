@@ -160,6 +160,48 @@ async fn test_query_all_reads_every_row() {
     conn.ping().await.expect("取得後の ping に失敗しました");
 }
 
+/// サーバーが返す配列を、NULL と多次元を含めて Vec として取り出せることを確認する。
+#[tokio::test]
+async fn test_row_reads_arrays_as_vec() {
+    helpers::init_tracing();
+    let (options, _node) = helpers::build_postgres_options().await;
+    let mut conn = helpers::connect(&options).await;
+
+    let row = conn
+        .query_one(
+            "SELECT ARRAY[1, 2, 3]::int4[] AS ints, ARRAY['a', NULL, 'b c', 'NULL']::text[] AS texts, \
+             ARRAY[[1, 2], [3, 4]]::int4[] AS matrix",
+            &[],
+        )
+        .await
+        .expect("配列の取得に失敗しました");
+    assert_eq!(
+        row.get_by_name::<Vec<i32>>("ints")
+            .expect("integer[] を取得できません"),
+        vec![1, 2, 3]
+    );
+    // 文字列の "NULL" は引用符付きで返るため、SQL NULL と区別して取り出せる。
+    assert_eq!(
+        row.get_by_name::<Vec<Option<String>>>("texts")
+            .expect("text[] を取得できません"),
+        vec![
+            Some("a".to_string()),
+            None,
+            Some("b c".to_string()),
+            Some("NULL".to_string())
+        ]
+    );
+    assert!(
+        row.get_by_name::<Vec<String>>("texts").is_err(),
+        "NULL を含む text[] を Vec<String> で取得できました"
+    );
+    assert_eq!(
+        row.get_by_name::<Vec<Vec<i32>>>("matrix")
+            .expect("2 次元の integer[] を取得できません"),
+        vec![vec![1, 2], vec![3, 4]]
+    );
+}
+
 #[tokio::test]
 async fn test_row_type_mismatch_is_an_error() {
     helpers::init_tracing();

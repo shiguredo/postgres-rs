@@ -619,3 +619,119 @@ fn prop_array_fallback() -> noprop::TestResult {
     })?;
     Ok(())
 }
+
+/// NULL を `None` として要素をサンプリングする。NULL は 1/4 の確率で出す。
+fn sample_nullable<T>(
+    ctx: &mut noprop::TestCaseContext,
+    mut sample: impl FnMut(&mut noprop::TestCaseContext) -> T,
+) -> Option<T> {
+    match noprop::sample_weighted_index(ctx, &[3, 1]) {
+        0 => Some(sample(ctx)),
+        _ => None,
+    }
+}
+
+/// `Option` の要素を配列の要素に変換する。`None` は SQL NULL にする。
+fn nullable_values<T>(elements: &[Option<T>], to_value: impl Fn(&T) -> Value) -> Vec<Value> {
+    elements
+        .iter()
+        .map(|element| element.as_ref().map_or(Value::Null, &to_value))
+        .collect()
+}
+
+/// 配列はエンコード・デコードの往復の後、`Vec<Option<T>>` として元の要素を取り出せる。
+///
+/// NULL を含まない配列だけが `Vec<T>` としても取り出せ、NULL を含む配列はエラーになる。
+/// 1 次元の integer[] と text[]、2 次元の integer[] を検証する。
+#[test]
+fn prop_array_into_vec() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("POSTGRES_RS_SEED")?;
+    // NULL の有無と 2 次元配列のどれかが一度も出ないと検証が空虚になるため数える。
+    let with_null = Cell::new(0usize);
+    let without_null = Cell::new(0usize);
+    let nested = Cell::new(0usize);
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(256, |ctx| {
+        // integer[]
+        let len = sample_len(ctx, 8);
+        let ints: Vec<Option<i32>> = (0..len)
+            .map(|_| sample_nullable(ctx, noprop::sample_i32))
+            .collect();
+        let value = Value::Array {
+            element_type: oid::INT4,
+            values: nullable_values(&ints, |v| Value::Int4(*v)),
+        };
+        let decoded = encode_decode(&value, oid::array::INT4);
+        assert_eq!(
+            Vec::<Option<i32>>::try_from(&decoded).expect("integer[] を取り出せません"),
+            ints,
+            "integer[] の要素が変化しました"
+        );
+        if ints.iter().all(Option::is_some) {
+            let expected: Vec<i32> = ints.iter().flatten().copied().collect();
+            assert_eq!(
+                Vec::<i32>::try_from(&decoded).expect("NULL のない integer[] を取り出せません"),
+                expected,
+                "NULL のない integer[] の要素が変化しました"
+            );
+            without_null.set(without_null.get() + 1);
+        } else {
+            assert!(
+                Vec::<i32>::try_from(&decoded).is_err(),
+                "NULL を含む integer[] を Vec<i32> で取り出せました"
+            );
+            with_null.set(with_null.get() + 1);
+        }
+
+        // text[]。引用符が必要な文字や "NULL" という文字列も要素として保持する。
+        let len = sample_len(ctx, 8);
+        let texts: Vec<Option<String>> = (0..len)
+            .map(|_| sample_nullable(ctx, |ctx| sample_cstring(ctx, 8)))
+            .collect();
+        let value = Value::Array {
+            element_type: oid::TEXT,
+            values: nullable_values(&texts, |v| Value::Text(v.clone())),
+        };
+        let decoded = encode_decode(&value, oid::array::TEXT);
+        assert_eq!(
+            Vec::<Option<String>>::try_from(&decoded).expect("text[] を取り出せません"),
+            texts,
+            "text[] の要素が変化しました"
+        );
+
+        // 2 次元の integer[]。PostgreSQL の多次元配列と同じく、行の長さをそろえる。
+        let rows = noprop::sample_usize_in(ctx, 1..=3);
+        let columns = noprop::sample_usize_in(ctx, 1..=3);
+        let matrix: Vec<Vec<Option<i32>>> = (0..rows)
+            .map(|_| {
+                (0..columns)
+                    .map(|_| sample_nullable(ctx, noprop::sample_i32))
+                    .collect()
+            })
+            .collect();
+        let value = Value::Array {
+            element_type: oid::INT4,
+            values: matrix
+                .iter()
+                .map(|row| Value::Array {
+                    element_type: oid::INT4,
+                    values: nullable_values(row, |v| Value::Int4(*v)),
+                })
+                .collect(),
+        };
+        let decoded = encode_decode(&value, oid::array::INT4);
+        assert_eq!(
+            Vec::<Vec<Option<i32>>>::try_from(&decoded)
+                .expect("2 次元の integer[] を取り出せません"),
+            matrix,
+            "2 次元の integer[] の要素が変化しました"
+        );
+        nested.set(nested.get() + 1);
+        Ok(())
+    })?;
+    assert!(
+        with_null.get() > 0 && without_null.get() > 0 && nested.get() > 0,
+        "NULL の有無または 2 次元配列が検証されませんでした\n{runner}"
+    );
+    Ok(())
+}

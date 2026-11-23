@@ -942,6 +942,65 @@ impl TryFrom<&Value> for Vec<u8> {
     }
 }
 
+/// 配列を `Vec<T>` として取り出す。
+///
+/// 要素はそれぞれ `T` の変換規則で取り出し、多次元配列は `Vec<Vec<T>>` のように
+/// 入れ子の `Vec` で取り出す。NULL の要素を含む配列はエラーになるため、
+/// `Vec<Option<T>>` で取り出す。`bytea` の値そのものは `Vec<u8>` で取り出す。
+impl<'a, T> TryFrom<&'a Value> for Vec<T>
+where
+    T: TryFrom<&'a Value, Error = Error>,
+{
+    type Error = Error;
+
+    fn try_from(value: &'a Value) -> Result<Self> {
+        let Value::Array { values, .. } = value else {
+            return Err(type_mismatch("an array"));
+        };
+        let mut out = Vec::new();
+        for (index, element) in values.iter().enumerate() {
+            if matches!(element, Value::Null) {
+                return Err(Error::interface(format!(
+                    "Array element {index} is NULL; read the array as Vec<Option<T>>"
+                )));
+            }
+            out.push(T::try_from(element).map_err(|error| array_element_error(index, error))?);
+        }
+        Ok(out)
+    }
+}
+
+/// NULL の要素を `None` として、配列を `Vec<Option<T>>` として取り出す。
+///
+/// NULL 以外の要素は `T` の変換規則で取り出す。
+impl<'a, T> TryFrom<&'a Value> for Vec<Option<T>>
+where
+    T: TryFrom<&'a Value, Error = Error>,
+{
+    type Error = Error;
+
+    fn try_from(value: &'a Value) -> Result<Self> {
+        let Value::Array { values, .. } = value else {
+            return Err(type_mismatch("an array"));
+        };
+        let mut out = Vec::new();
+        for (index, element) in values.iter().enumerate() {
+            out.push(match element {
+                Value::Null => None,
+                element => {
+                    Some(T::try_from(element).map_err(|error| array_element_error(index, error))?)
+                }
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// 配列要素の変換エラーに要素の位置を加える。
+fn array_element_error(index: usize, error: Error) -> Error {
+    Error::interface(format!("Array element {index}: {}", error.message()))
+}
+
 impl TryFrom<&Value> for u128 {
     type Error = Error;
 
@@ -1690,6 +1749,70 @@ mod tests {
                 element_type: oid::TEXT,
                 values: vec![Value::Text("a\u{00A0}".to_string())],
             }
+        );
+    }
+
+    /// 配列として取り出せない値と要素は、理由と位置が分かるエラーにする。
+    #[test]
+    fn test_array_into_vec_errors() {
+        let ints = |values: Vec<Value>| Value::Array {
+            element_type: oid::INT4,
+            values,
+        };
+        let error = Vec::<i32>::try_from(&Value::Int4(1))
+            .expect_err("配列でない値を Vec として取り出せました");
+        assert_eq!(
+            error.message(),
+            "Cannot read a column of another type as an array"
+        );
+        let error = Vec::<Option<i32>>::try_from(&Value::Text("{1}".to_string()))
+            .expect_err("配列でない値を Vec<Option<T>> として取り出せました");
+        assert_eq!(
+            error.message(),
+            "Cannot read a column of another type as an array"
+        );
+
+        // NULL の要素は Vec<T> では取り出せず、Vec<Option<T>> を使うよう案内する。
+        let with_null = ints(vec![Value::Int4(1), Value::Null]);
+        let error =
+            Vec::<i32>::try_from(&with_null).expect_err("NULL の要素を Vec<T> で取り出せました");
+        assert_eq!(
+            error.message(),
+            "Array element 1 is NULL; read the array as Vec<Option<T>>"
+        );
+
+        // 要素の型が合わない場合は、要素の位置と要素の変換エラーを示す。
+        let mixed = ints(vec![Value::Int4(1), Value::Text("x".to_string())]);
+        for error in [
+            Vec::<i32>::try_from(&mixed).expect_err("型の異なる要素を取り出せました"),
+            Vec::<Option<i32>>::try_from(&mixed).expect_err("型の異なる要素を取り出せました"),
+        ] {
+            assert_eq!(
+                error.message(),
+                "Array element 1: Cannot read a column of another type as INTEGER"
+            );
+        }
+
+        // 多次元配列を 1 次元として取り出すと、入れ子の要素の位置でエラーになる。
+        let nested = ints(vec![ints(vec![Value::Int4(1)])]);
+        let error = Vec::<i32>::try_from(&nested).expect_err("2 次元配列を 1 次元で取り出せました");
+        assert_eq!(
+            error.message(),
+            "Array element 0: Cannot read a column of another type as INTEGER"
+        );
+
+        // bytea の値は従来どおり Vec<u8> で取り出し、bytea[] は Vec<Vec<u8>> で取り出す。
+        assert_eq!(
+            Vec::<u8>::try_from(&Value::Bytes(vec![1, 2])).expect("bytea を取り出せません"),
+            vec![1, 2]
+        );
+        let byteas = Value::Array {
+            element_type: oid::BYTEA,
+            values: vec![Value::Bytes(vec![1]), Value::Bytes(Vec::new())],
+        };
+        assert_eq!(
+            Vec::<Vec<u8>>::try_from(&byteas).expect("bytea[] を取り出せません"),
+            vec![vec![1], Vec::new()]
         );
     }
 }
