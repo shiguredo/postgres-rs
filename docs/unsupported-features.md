@@ -39,12 +39,14 @@
 
 ## 照合に使った一次資料
 
-比較基準は PostgreSQL 18.7 です。
+比較基準は PostgreSQL 19.0 です。
 
-- [本家の認証選択と状態検査](https://github.com/postgres/postgres/blob/REL_18_7/src/interfaces/libpq/fe-auth.c)
-- [本家の接続文字列と TLS 設定](https://github.com/postgres/postgres/blob/REL_18_7/src/interfaces/libpq/fe-connect.c)
-- [本家の MD5 パスワード非推奨の扱い](https://github.com/postgres/postgres/blob/REL_18_7/src/backend/libpq/crypt.c)
-- [本家の日付・時刻の出力形式](https://github.com/postgres/postgres/blob/REL_18_7/src/backend/utils/adt/datetime.c)
-- [本家の `client_encoding` と `DateStyle` の正規化](https://github.com/postgres/postgres/blob/REL_18_7/src/backend/commands/variable.c)
-- [本家の `ParameterStatus` の通知](https://github.com/postgres/postgres/blob/REL_18_7/src/backend/utils/misc/guc.c)
-- [PostgreSQL 18 のプロトコルフロー](https://www.postgresql.org/docs/18/protocol-flow.html)
+- [本家の認証選択と状態検査](https://github.com/postgres/postgres/blob/REL_19_0/src/interfaces/libpq/fe-auth.c)
+- [本家の接続文字列と TLS 設定](https://github.com/postgres/postgres/blob/REL_19_0/src/interfaces/libpq/fe-connect.c)
+- [本家の MD5 パスワード非推奨の扱い](https://github.com/postgres/postgres/blob/REL_19_0/src/backend/libpq/crypt.c)
+- [本家の日付・時刻の出力形式](https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/adt/datetime.c)
+- [本家の `client_encoding` と `DateStyle` の正規化](https://github.com/postgres/postgres/blob/REL_19_0/src/backend/commands/variable.c)
+- [本家の `ParameterStatus` の通知](https://github.com/postgres/postgres/blob/REL_19_0/src/backend/utils/misc/guc.c)
+- [PostgreSQL 19 のプロトコルの概要 (版と形式コード)](https://www.postgresql.org/docs/19/protocol-overview.html)
+- [PostgreSQL 19 のプロトコルフロー (Function Call を含む)](https://www.postgresql.org/docs/19/protocol-flow.html)
+- [PostgreSQL 19 の libpq の接続パラメーター](https://www.postgresql.org/docs/19/libpq-connect.html#LIBPQ-PARAMKEYWORDS)
