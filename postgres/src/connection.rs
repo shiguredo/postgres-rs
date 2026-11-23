@@ -231,6 +231,10 @@ pub struct Connection {
     ///
     /// 次の `begin()` でロールバックしてから開始する。
     transaction_dirty: bool,
+    /// `next_row` で逐次取得している結果セットの列情報。
+    ///
+    /// 行ごとに複製しないよう最初の行で作って共有し、新しい要求の送信時に捨てる。
+    stream_fields: Option<Arc<[crate::protocol::FieldDescription]>>,
 }
 
 impl Connection {
@@ -281,6 +285,7 @@ impl Connection {
             request_ready_sequence: 0,
             request_can_cancel: false,
             transaction_dirty: false,
+            stream_fields: None,
         };
 
         conn.authenticate(Some(&mut provider)).await?;
@@ -595,6 +600,8 @@ impl Connection {
     async fn write_request(&mut self, can_cancel: bool) -> Result<()> {
         self.request_ready_sequence = self.inner.ready_sequence();
         self.request_can_cancel = can_cancel;
+        // 逐次取得の列情報は要求ごとに異なるため、前の要求のものを使わない。
+        self.stream_fields = None;
         self.write_pending().await
     }
 
@@ -1201,7 +1208,9 @@ impl Connection {
     /// 最初の結果セットを読み切ったときは残りの結果セットをバッファせずに
     /// 同期応答まで処理し、`None` を返す。サーバーエラーはその時点で返す。
     /// 読み取りを途中でやめる場合は `finish_rows` で読み残しを破棄できる。
-    pub async fn next_row(&mut self) -> Result<Option<Vec<Value>>> {
+    /// 行は [`Connection::query_all`] と同じく [`crate::row::Row`] で返し、
+    /// 列番号と列名から型付きで取り出せる。
+    pub async fn next_row(&mut self) -> Result<Option<crate::row::Row>> {
         if self.is_open() && self.phase == WirePhase::Idle {
             return Ok(None);
         }
@@ -1213,7 +1222,30 @@ impl Connection {
         } else {
             WirePhase::Rows
         };
-        self.finish_response(result, continuation).await
+        let Some(values) = self.finish_response(result, continuation).await? else {
+            return Ok(None);
+        };
+        Ok(Some(crate::row::Row::new(self.stream_fields()?, values)))
+    }
+
+    /// 逐次取得している結果セットの列情報を返す。
+    ///
+    /// 読んだ行の結果セットは接続が保持しているため、最初の行でその列情報を共有用に作る。
+    fn stream_fields(&mut self) -> Result<Arc<[crate::protocol::FieldDescription]>> {
+        if let Some(fields) = &self.stream_fields {
+            return Ok(Arc::clone(fields));
+        }
+        let fields: Arc<[crate::protocol::FieldDescription]> = self
+            .inner
+            .result()
+            .ok_or_else(|| {
+                Error::internal("Row description of the streamed result is not available")
+            })?
+            .fields
+            .clone()
+            .into();
+        self.stream_fields = Some(Arc::clone(&fields));
+        Ok(fields)
     }
 
     /// 未読のストリーム行と後続結果セットを破棄し、接続を同期する。

@@ -182,7 +182,7 @@ async fn main() {
 
 ### 行の逐次取得
 
-`unbuffered = true` を渡すと `next_row` で 1 行ずつ取得できます。
+`unbuffered = true` を渡すと `next_row` で 1 行ずつ `Row` として取得できます。
 
 ```rust
 conn.execute_uncached("SELECT generate_series(1, $1::int)", &[Value::Int4(100_000)], true)

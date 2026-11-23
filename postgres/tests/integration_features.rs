@@ -242,15 +242,23 @@ async fn test_streaming_rows_and_early_finish() {
     .await
     .expect("行の逐次取得を開始できません");
     for expected in 1..=512 {
+        let row = conn
+            .next_row()
+            .await
+            .expect("行を読み取れません")
+            .expect("行が足りません");
         assert_eq!(
-            conn.next_row().await.expect("行を読み取れません"),
-            Some(vec![Value::Int4(expected)]),
+            row.get_by_name::<i32>("generate_series")
+                .expect("列名から値を取得できません"),
+            expected,
             "行順序が一致しません"
         );
     }
-    assert_eq!(
-        conn.next_row().await.expect("同期を確認できません"),
-        None,
+    assert!(
+        conn.next_row()
+            .await
+            .expect("同期を確認できません")
+            .is_none(),
         "余分な行が残っています"
     );
     assert!(!conn.is_busy(), "正常な完了後に接続がビジーです");
@@ -260,8 +268,12 @@ async fn test_streaming_rows_and_early_finish() {
         .await
         .expect("複文を開始できません");
     assert_eq!(
-        conn.next_row().await.expect("先頭行を取得できません"),
-        Some(vec![Value::Int4(1)]),
+        conn.next_row()
+            .await
+            .expect("先頭行を取得できません")
+            .expect("先頭行がありません")
+            .into_values(),
+        vec![Value::Int4(1)],
         "先頭行が一致しません"
     );
     conn.finish_rows()
