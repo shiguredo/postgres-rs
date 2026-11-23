@@ -141,7 +141,7 @@ fn escape_bytea(value: &[u8]) -> String {
         out.extend_from_slice(&HEX_PAIRS[usize::from(*b)]);
     }
     // 書き込むのは ASCII だけのため UTF-8 として必ず妥当になる。
-    String::from_utf8(out).expect("16 進表は ASCII です")
+    String::from_utf8(out).expect("Hex output contains only ASCII bytes")
 }
 
 /// フィールド型 (OID) に対応するデコーダーを取得する。
@@ -356,7 +356,7 @@ fn uuid_to_text(value: u128) -> String {
         out.extend_from_slice(&HEX_PAIRS[usize::from(*byte)]);
     }
     // 書き込むのは ASCII だけのため UTF-8 として必ず妥当になる。
-    String::from_utf8(out).expect("16 進表は ASCII です")
+    String::from_utf8(out).expect("Hex output contains only ASCII bytes")
 }
 
 /// JSON / JSONB をテキストのまま保持する。
@@ -585,7 +585,7 @@ fn parse_quoted_array_element(bytes: &[u8], index: &mut usize) -> Option<String>
     }
     skip_array_whitespace(bytes, index);
     // 写したのは入力の UTF-8 部分列のため妥当な UTF-8 になる。
-    Some(String::from_utf8(value).expect("入力の部分列は UTF-8 です"))
+    Some(String::from_utf8(value).expect("A substring of UTF-8 input is valid UTF-8"))
 }
 
 /// 引用符なしの要素を解析する。
@@ -627,7 +627,7 @@ fn parse_unquoted_array_element(bytes: &[u8], index: &mut usize) -> Option<Array
     }
     // 区切りの空白は ASCII だけのため、有効長は文字の境界に一致する。
     raw.truncate(value_len);
-    let value = String::from_utf8(raw).expect("入力の部分列は UTF-8 です");
+    let value = String::from_utf8(raw).expect("A substring of UTF-8 input is valid UTF-8");
     if !escaped && value.eq_ignore_ascii_case("null") {
         Some(ArrayElement::Null)
     } else {

@@ -176,7 +176,7 @@ mod tests {
         let codes: Vec<u32> = text.chars().map(|ch| ch as u32).collect();
         nfkc(&codes)
             .into_iter()
-            .map(|code| char::from_u32(code).expect("NFKC output is a scalar value"))
+            .map(|code| char::from_u32(code).expect("NFKC の出力は Unicode のスカラー値です"))
             .collect()
     }
 
