@@ -3,9 +3,10 @@
 
 //! PostgreSQL の日付・時刻型。
 //!
-//! `DATE` / `TIME` / `TIMESTAMP` / `TIMESTAMPTZ` を、PostgreSQL 18 の内部表現で保持する。
+//! `DATE` / `TIME` / `TIMESTAMP` / `TIMESTAMPTZ` / `INTERVAL` を、PostgreSQL 18 の内部表現で保持する。
 //! 有限の日付は 2000-01-01 からの日数、有限の時刻は深夜からのマイクロ秒、
-//! 有限のタイムスタンプは 2000-01-01 00:00:00 からのマイクロ秒である。
+//! 有限のタイムスタンプは 2000-01-01 00:00:00 からのマイクロ秒、
+//! 有限の時間間隔は月数・日数・マイクロ秒の組である。
 //! 暦はプロレプティック・グレゴリオ暦で、閏秒の挿入表は持たない。1 日は常に 86400 秒。
 //! 時計もタイムゾーンデータベースも読まない。入出力は呼び出し側のバイト列だけである。
 //!
@@ -14,11 +15,13 @@
 //! 将来の版で変わる可能性がある。
 
 mod date;
+mod interval;
 mod julian;
 mod text;
 mod time;
 mod timestamp;
 
 pub use date::{Date, FiniteDate};
+pub use interval::{FiniteInterval, Interval};
 pub use time::Time;
 pub use timestamp::{FiniteTimestamp, FiniteTimestamptz, Timestamp, Timestamptz};

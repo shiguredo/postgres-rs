@@ -199,14 +199,8 @@ pub mod oid {
     pub const TIMESTAMPTZ: u32 = 1184;
     /// uuid 型 (汎用一意識別子)。
     pub const UUID: u32 = 2950;
-
-    // 以下は変換せず `Value::Text` として扱う組み込み型。配列は要素を `Value::Text` にした
-    // `Value::Array` として返すため、要素型と配列型の OID を持つ。
-    // OID は PostgreSQL 19 の src/include/catalog/pg_type.dat の oid と array_type_oid による。
     /// interval 型 (時間間隔)。
     pub const INTERVAL: u32 = 1186;
-    /// timetz 型 (タイムゾーン付きの時刻)。
-    pub const TIMETZ: u32 = 1266;
     /// inet 型 (IP アドレスとネットワーク)。
     pub const INET: u32 = 869;
     /// cidr 型 (IP ネットワーク)。
@@ -215,6 +209,12 @@ pub mod oid {
     pub const MACADDR: u32 = 829;
     /// macaddr8 型 (8 バイトの MAC アドレス)。
     pub const MACADDR8: u32 = 774;
+
+    // 以下は変換せず `Value::Text` として扱う組み込み型。配列は要素を `Value::Text` にした
+    // `Value::Array` として返すため、要素型と配列型の OID を持つ。
+    // OID は PostgreSQL 19 の src/include/catalog/pg_type.dat の oid と array_type_oid による。
+    /// timetz 型 (タイムゾーン付きの時刻)。
+    pub const TIMETZ: u32 = 1266;
     /// money 型 (通貨)。
     pub const MONEY: u32 = 790;
     /// bit 型 (固定長のビット列)。

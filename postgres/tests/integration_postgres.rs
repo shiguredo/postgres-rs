@@ -12,12 +12,13 @@
 mod helpers;
 
 use shiguredo_postgres::constants::oid;
-use shiguredo_postgres::converters::Value;
+use shiguredo_postgres::converters::{IpNetwork, Value};
 use shiguredo_postgres::cursor::{Cursor, DictCursor};
-use shiguredo_postgres::datetime::{Date, Time, Timestamp, Timestamptz};
+use shiguredo_postgres::datetime::{Date, FiniteInterval, Interval, Time, Timestamp, Timestamptz};
 use shiguredo_postgres::error::Error;
 use shiguredo_postgres::pool::PoolConfig;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// テスト対象のイメージが要求したバージョンで起動していることを確認する。
@@ -964,8 +965,8 @@ async fn test_timestamptz_timezone() {
     );
 }
 
-/// テキストとして扱う組み込み型の OID 定数がサーバーのカタログと一致し、
-/// その配列を要素がテキストの配列として取り出せることを確認する。
+/// 配列を `Value::Array` で返す組み込み型の OID 定数がサーバーのカタログと一致し、
+/// テキストとして扱う型の配列を要素がテキストの配列として取り出せることを確認する。
 #[tokio::test]
 async fn test_text_type_arrays() {
     helpers::init_tracing();
@@ -1071,15 +1072,15 @@ async fn test_text_type_arrays() {
     // 代表的な型の配列を、NULL を含めて要素がテキストの配列として取り出す。
     let row = conn
         .query_one(
-            "SELECT ARRAY['1 day', NULL]::interval[], ARRAY['192.168.0.1/24']::inet[], \
+            "SELECT ARRAY['04:05:06+09', NULL]::timetz[], ARRAY['16/B374D848']::pg_lsn[], \
              ARRAY['[1,3)']::int4range[], ARRAY[point(1, 2)]",
             &[],
         )
         .await
         .expect("配列の取得に失敗しました");
     for (index, element, values) in [
-        (0, oid::INTERVAL, vec![Some("1 day"), None]),
-        (1, oid::INET, vec![Some("192.168.0.1/24")]),
+        (0, oid::TIMETZ, vec![Some("04:05:06+09"), None]),
+        (1, oid::PG_LSN, vec![Some("16/B374D848")]),
         (2, oid::INT4RANGE, vec![Some("[1,3)")]),
         (3, oid::POINT, vec![Some("(1,2)")]),
     ] {
@@ -1100,6 +1101,163 @@ async fn test_text_type_arrays() {
                 .expect("配列を取得できません"),
             expected,
             "列 {index} の要素が一致しません"
+        );
+    }
+}
+
+/// interval、inet / cidr、macaddr / macaddr8 を型付きの値として読み書きできることを確認する。
+#[tokio::test]
+async fn test_interval_network_and_mac_conversion() {
+    helpers::init_tracing();
+    let (options, _node) = helpers::build_postgres_options().await;
+    let mut conn = helpers::connect(&options).await;
+    let finite = |months, days, microseconds| {
+        Interval::Finite(
+            FiniteInterval::new(months, days, microseconds).expect("有限の値を作れません"),
+        )
+    };
+    let network = |address: &str, prefix_len| IpNetwork {
+        address: address.parse().expect("アドレスを解析できません"),
+        prefix_len,
+    };
+
+    // サーバーの出力 (IntervalStyle=postgres) を型付きの値として読む。
+    let row = conn
+        .query_one(
+            "SELECT '1 year 2 mons 3 days 04:05:06.789'::interval, '-1 days +02:03:00'::interval, \
+             '192.168.0.1'::inet, '2001:db8::1/64'::inet, '10.0.0.0/8'::cidr, \
+             '08:00:2b:01:02:03'::macaddr, '08:00:2b:01:02:03:04:05'::macaddr8, \
+             ARRAY['1 day', NULL]::interval[], ARRAY['10.0.0.1', '::1/128']::inet[]",
+            &[],
+        )
+        .await
+        .expect("値の取得に失敗しました");
+    assert_eq!(
+        row.get::<Interval>(0).expect("interval を取得できません"),
+        finite(14, 3, 14_706_789_000)
+    );
+    assert_eq!(
+        row.get::<Interval>(1).expect("interval を取得できません"),
+        finite(0, -1, 7_380_000_000)
+    );
+    assert_eq!(
+        row.get::<IpAddr>(2)
+            .expect("ホストアドレスを取得できません"),
+        "192.168.0.1"
+            .parse::<IpAddr>()
+            .expect("アドレスを解析できません")
+    );
+    assert_eq!(
+        row.get::<IpNetwork>(3).expect("inet を取得できません"),
+        network("2001:db8::1", 64)
+    );
+    assert_eq!(
+        row.get::<IpNetwork>(4).expect("cidr を取得できません"),
+        network("10.0.0.0", 8)
+    );
+    assert_eq!(
+        row.get::<[u8; 6]>(5).expect("macaddr を取得できません"),
+        [0x08, 0x00, 0x2b, 0x01, 0x02, 0x03]
+    );
+    assert_eq!(
+        row.get::<[u8; 8]>(6).expect("macaddr8 を取得できません"),
+        [0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x05]
+    );
+    assert_eq!(
+        row.get::<Vec<Option<Interval>>>(7)
+            .expect("interval[] を取得できません"),
+        vec![Some(finite(0, 1, 0)), None]
+    );
+    assert_eq!(
+        row.get::<Vec<IpNetwork>>(8)
+            .expect("inet[] を取得できません"),
+        vec![network("10.0.0.1", 32), network("::1", 128)]
+    );
+
+    // パラメーターとして送った値を、サーバーが同じ値として解釈して返す。
+    let values = [
+        Value::Interval(finite(-14, -3, -1)),
+        Value::Interval(finite(1_234_567, -98_765, -123_456_789_012_345)),
+        Value::Inet(network("2001:db8::abcd", 48)),
+        Value::Cidr(network("192.168.0.0", 16)),
+        Value::MacAddr([0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]),
+        Value::MacAddr8([1, 2, 3, 4, 5, 6, 7, 8]),
+    ];
+    let row = conn
+        .query_one(
+            "SELECT $1::interval, $2::interval, $3::inet, $4::cidr, $5::macaddr, $6::macaddr8",
+            &values,
+        )
+        .await
+        .expect("パラメーターの往復に失敗しました");
+    assert_eq!(row.into_values(), values.to_vec(), "往復で値が変わりました");
+
+    // ほかの IntervalStyle の出力は型付きの値にせず、テキストのまま返す。
+    conn.query("SET IntervalStyle = 'iso_8601'", false)
+        .await
+        .expect("IntervalStyle を変更できません");
+    let row = conn
+        .query_one("SELECT '1 day'::interval", &[])
+        .await
+        .expect("interval の取得に失敗しました");
+    assert_eq!(row.value(0), Some(&Value::Text("P1D".to_string())));
+
+    // sql_standard では符号のないフィールドに先頭の符号が及ぶが、postgres 形式の値は
+    // 負のフィールドの後ろに符号を明示するため、同じ値として入力される。
+    conn.query(
+        "SET IntervalStyle = 'sql_standard'; CREATE TEMPORARY TABLE intervals (v interval)",
+        false,
+    )
+    .await
+    .expect("sql_standard の準備に失敗しました");
+    let mixed = [
+        finite(0, -1, 7_380_000_000),
+        finite(-14, 3, -1),
+        finite(-12, 0, 1),
+    ];
+    for interval in mixed {
+        conn.execute(
+            "INSERT INTO intervals VALUES ($1)",
+            &[Value::Interval(interval)],
+            false,
+        )
+        .await
+        .expect("sql_standard で interval を挿入できません");
+    }
+    conn.query("RESET IntervalStyle", false)
+        .await
+        .expect("IntervalStyle を戻せません");
+    let stored: Vec<Interval> = conn
+        .query_all("SELECT v FROM intervals ORDER BY ctid", &[])
+        .await
+        .expect("挿入した interval を取得できません")
+        .iter()
+        .map(|row| row.get::<Interval>(0).expect("interval を取得できません"))
+        .collect();
+    assert_eq!(stored, mixed.to_vec(), "sql_standard で値が変わりました");
+
+    // 無限大の interval は PostgreSQL 17 以降で使える。
+    let version_num = conn
+        .query_one("SELECT current_setting('server_version_num')::int", &[])
+        .await
+        .expect("サーバーの版を取得できません")
+        .get::<i32>(0)
+        .expect("版の番号を取得できません");
+    if version_num >= 170000 {
+        let row = conn
+            .query_one(
+                "SELECT 'infinity'::interval, $1::interval",
+                &[Value::Interval(Interval::NegInfinity)],
+            )
+            .await
+            .expect("無限大の interval の取得に失敗しました");
+        assert_eq!(
+            row.get::<Interval>(0).expect("infinity を取得できません"),
+            Interval::Infinity
+        );
+        assert_eq!(
+            row.get::<Interval>(1).expect("-infinity を取得できません"),
+            Interval::NegInfinity
         );
     }
 }

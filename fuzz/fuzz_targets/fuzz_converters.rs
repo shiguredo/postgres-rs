@@ -26,7 +26,8 @@ fuzz_target!(|data: &[u8]| {
             oid::array::INT2, oid::array::INT4, oid::array::INT8, oid::array::FLOAT4,
             oid::array::FLOAT8, oid::array::NUMERIC, oid::array::OID8, oid::array::UUID,
             oid::array::JSON, oid::array::JSONB, oid::array::DATE, oid::array::TIME,
-            oid::array::TIMESTAMP, oid::array::TIMESTAMPTZ,
+            oid::array::TIMESTAMP, oid::array::TIMESTAMPTZ, oid::INTERVAL, oid::INET,
+            oid::CIDR, oid::MACADDR, oid::MACADDR8, oid::array::INTERVAL, oid::array::INET,
         ];
         for type_oid in type_oids {
             let _ = decoder_for(type_oid)(s);

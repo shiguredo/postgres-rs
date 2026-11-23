@@ -7,8 +7,8 @@
 //! 元の値を保持することを検証する。
 
 use shiguredo_postgres_core::constants::oid;
-use shiguredo_postgres_core::converters::{Value, decoder_for};
-use shiguredo_postgres_core::datetime::{Date, Time, Timestamp, Timestamptz};
+use shiguredo_postgres_core::converters::{IpNetwork, Value, decoder_for};
+use shiguredo_postgres_core::datetime::{Date, Interval, Time, Timestamp, Timestamptz};
 use std::cell::Cell;
 
 /// 長さをサンプリングする。
@@ -81,12 +81,12 @@ fn sample_f32_arbitrary(ctx: &mut noprop::TestCaseContext) -> f32 {
 
 /// エンコード・デコードで往復が成立するスカラー値をサンプリングする。
 ///
-/// 戻り値の添え字は呼び出し側のカバレッジ記録用で、10 種類の variant を
+/// 戻り値の添え字は呼び出し側のカバレッジ記録用で、16 種類の variant を
 /// 均等な重みで選ぶ。NaN を含む float と特殊値を含む float は専用のテストで扱う。
 fn sample_scalar(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
-    // 11 variant を均等に選ぶ。256 ケースで特定 variant を見逃す確率は
-    // (10/11)^256 ≒ 3e-11 で無視できる。
-    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    // 16 variant を均等に選ぶ。256 ケースで特定 variant を見逃す確率は
+    // (15/16)^256 ≒ 7e-8 で無視できる。
+    let index = noprop::sample_weighted_index(ctx, &[1; 16]);
     let value = match index {
         0 => Value::Bool(noprop::sample_bool(ctx)),
         1 => Value::Int2(noprop::sample_i16(ctx)),
@@ -98,9 +98,74 @@ fn sample_scalar(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
         7 => Value::Bytes(sample_bytes_capped(ctx, 256)),
         8 => Value::Uuid(noprop::sample_u128(ctx)),
         9 => Value::Oid8(noprop::sample_u64(ctx)),
+        10 => Value::Interval(sample_interval(ctx)),
+        11 => Value::Inet(sample_ip_network(ctx)),
+        12 => Value::Cidr(sample_ip_network(ctx)),
+        13 => {
+            let bytes = noprop::sample_u64(ctx).to_be_bytes();
+            Value::MacAddr([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]])
+        }
+        14 => Value::MacAddr8(noprop::sample_u64(ctx).to_be_bytes()),
         _ => Value::Json(sample_text(ctx, 64)),
     };
     (index, value)
+}
+
+/// `INTERVAL` をサンプリングする。
+///
+/// 各フィールドは 0、±1、最小値、最大値の境界に意味のある確率 (1/4) を与える。
+/// 0 のフィールドが混ざると、書き出しで省くフィールドと符号の付け方の組み合わせが増える。
+/// 無限大もそれぞれ 1/8 の確率で選ぶ。
+fn sample_interval(ctx: &mut noprop::TestCaseContext) -> Interval {
+    match noprop::sample_weighted_index(ctx, &[6, 1, 1]) {
+        0 => {
+            let months = noprop::sample_with_boundaries(
+                ctx,
+                &[0, 1, -1, i32::MIN, i32::MAX],
+                noprop::Ratio::one_nth(4),
+                noprop::sample_i32,
+            );
+            let days = noprop::sample_with_boundaries(
+                ctx,
+                &[0, 1, -1, i32::MIN, i32::MAX],
+                noprop::Ratio::one_nth(4),
+                noprop::sample_i32,
+            );
+            let microseconds = noprop::sample_with_boundaries(
+                ctx,
+                &[0, 1, -1, 1_000_000, i64::MIN, i64::MAX],
+                noprop::Ratio::one_nth(4),
+                noprop::sample_i64,
+            );
+            // 3 つがすべて最小値またはすべて最大値の組み合わせは無限大になる。
+            Interval::from_postgres(months, days, microseconds)
+        }
+        1 => Interval::NegInfinity,
+        _ => Interval::Infinity,
+    }
+}
+
+/// `INET` / `CIDR` の値をサンプリングする。
+///
+/// IPv4 と IPv6 を半々で選び、プレフィックス長は 0 と最大値の境界に 1/2 の確率を与える。
+fn sample_ip_network(ctx: &mut noprop::TestCaseContext) -> IpNetwork {
+    let address = if noprop::sample_bool(ctx) {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(noprop::sample_u32(ctx)))
+    } else {
+        std::net::IpAddr::V6(std::net::Ipv6Addr::from(noprop::sample_u128(ctx)))
+    };
+    let max = match address {
+        std::net::IpAddr::V4(_) => 32,
+        std::net::IpAddr::V6(_) => 128,
+    };
+    let prefix_len =
+        noprop::sample_with_boundaries(ctx, &[0, max], noprop::Ratio::one_nth(2), |ctx| {
+            noprop::sample_usize_in(ctx, 0..=max)
+        });
+    IpNetwork {
+        address,
+        prefix_len: u8::try_from(prefix_len).expect("プレフィックス長は 128 以下です"),
+    }
 }
 
 /// 閉区間の年を一様に引く。幅は `u32` に収まる。
@@ -211,9 +276,9 @@ fn sample_timestamptz(ctx: &mut noprop::TestCaseContext) -> Value {
 /// 複合要素 (ネスト配列) はサポート対象外のため含めない。
 /// 戻り値の添え字は呼び出し側のカバレッジ記録用である。
 fn sample_array(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
-    // 10 種類の要素型を均等に選ぶ。256 ケースで特定型を見逃す確率は
-    // (9/10)^256 ≒ 2e-12 で無視できる。
-    let index = noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    // 12 種類の要素型を均等に選ぶ。256 ケースで特定型を見逃す確率は
+    // (11/12)^256 ≒ 2e-10 で無視できる。
+    let index = noprop::sample_weighted_index(ctx, &[1; 12]);
     let count = sample_len(ctx, 8);
     let value = match index {
         0 => Value::Array {
@@ -270,6 +335,19 @@ fn sample_array(ctx: &mut noprop::TestCaseContext) -> (usize, Value) {
                 .map(|_| Value::Oid8(noprop::sample_u64(ctx)))
                 .collect(),
         },
+        // interval は空白を含むため、要素は引用符で囲まれる。
+        9 => Value::Array {
+            element_type: oid::INTERVAL,
+            values: (0..count)
+                .map(|_| Value::Interval(sample_interval(ctx)))
+                .collect(),
+        },
+        10 => Value::Array {
+            element_type: oid::INET,
+            values: (0..count)
+                .map(|_| Value::Inet(sample_ip_network(ctx)))
+                .collect(),
+        },
         _ => Value::Array {
             element_type: oid::UUID,
             values: (0..count)
@@ -305,6 +383,11 @@ fn scalar_decoder_oid(value: &Value) -> u32 {
         Value::Bytes(_) => oid::BYTEA,
         Value::Uuid(_) => oid::UUID,
         Value::Json(_) => oid::JSON,
+        Value::Interval(_) => oid::INTERVAL,
+        Value::Inet(_) => oid::INET,
+        Value::Cidr(_) => oid::CIDR,
+        Value::MacAddr(_) => oid::MACADDR,
+        Value::MacAddr8(_) => oid::MACADDR8,
         _ => unreachable!("スカラー以外の値が渡されました"),
     }
 }
@@ -325,6 +408,8 @@ fn array_oid_for(element_type: u32) -> u32 {
         oid::BYTEA => oid::array::BYTEA,
         oid::UUID => oid::array::UUID,
         oid::OID8 => oid::array::OID8,
+        oid::INTERVAL => oid::array::INTERVAL,
+        oid::INET => oid::array::INET,
         _ => unreachable!("対応する配列型 OID がありません"),
     }
 }
@@ -333,7 +418,7 @@ fn array_oid_for(element_type: u32) -> u32 {
 #[test]
 fn prop_scalar_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("POSTGRES_RS_SEED")?;
-    // 11 variant のうち 1 つでも欠けると検証が偏るため、ビットマスクで記録する。
+    // 16 variant のうち 1 つでも欠けると検証が偏るため、ビットマスクで記録する。
     let seen = Cell::new(0u16);
     let mut runner = noprop::Runner::new(seed);
     runner.run(256, |ctx| {
@@ -347,8 +432,8 @@ fn prop_scalar_roundtrip() -> noprop::TestResult {
     })?;
     assert_eq!(
         seen.get(),
-        0x7ff,
-        "すべてのスカラー型が検証されませんでした: {:#013b}\n{runner}",
+        0xffff,
+        "すべてのスカラー型が検証されませんでした: {:#018b}\n{runner}",
         seen.get()
     );
     Ok(())
@@ -490,7 +575,7 @@ fn prop_timestamptz_roundtrip() -> noprop::TestResult {
 #[test]
 fn prop_array_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("POSTGRES_RS_SEED")?;
-    // 10 種類の要素型のうち 1 つでも欠けると検証が偏るため記録する。
+    // 12 種類の要素型のうち 1 つでも欠けると検証が偏るため記録する。
     let seen = Cell::new(0u16);
     let non_empty = Cell::new(0usize);
     let mut runner = noprop::Runner::new(seed);
@@ -514,8 +599,8 @@ fn prop_array_roundtrip() -> noprop::TestResult {
     })?;
     assert_eq!(
         seen.get(),
-        0x3ff,
-        "すべての配列要素型が検証されませんでした: {:#012b}\n{runner}",
+        0xfff,
+        "すべての配列要素型が検証されませんでした: {:#014b}\n{runner}",
         seen.get()
     );
     assert!(

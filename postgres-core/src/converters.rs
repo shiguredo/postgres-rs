@@ -6,13 +6,14 @@
 //! PostgreSQL のテキスト形式 (クエリ結果・パラメータ) を
 //! `Value` に変換する。バイナリ形式のサポートはまだない。
 //!
-//! INTERVAL / INET / CIDR / MACADDR / MONEY / 複合型 / enum / range は
+//! MONEY / 複合型 / enum / range など [`decoder_for`] が扱わない型は
 //! テキストとして扱い、`Value::Text` にフォールバックする。
 //! 将来のバージョンで個別の型として追加される可能性がある。
 
 use crate::constants::oid;
-use crate::datetime::{Date, Time, Timestamp, Timestamptz};
+use crate::datetime::{Date, Interval, Time, Timestamp, Timestamptz};
 use crate::error::{Error, Result};
+use std::net::IpAddr;
 
 /// データベース上で扱う値の型。
 ///
@@ -67,6 +68,113 @@ pub enum Value {
     Timestamp(Timestamp),
     /// PostgreSQL の `TIMESTAMPTZ` (UTC に正規化したタイムゾーン付き日時) を保持する。
     Timestamptz(Timestamptz),
+    /// PostgreSQL の `INTERVAL` (時間間隔) を保持する。
+    ///
+    /// サーバーの `IntervalStyle` が `postgres` (既定) の場合に変換する。
+    /// ほかの形式で出力された値は `Value::Text` になる。
+    Interval(Interval),
+    /// PostgreSQL の `INET` (ホストアドレスとネットワーク) を保持する。
+    Inet(IpNetwork),
+    /// PostgreSQL の `CIDR` (ネットワーク) を保持する。
+    Cidr(IpNetwork),
+    /// PostgreSQL の `MACADDR` (6 バイトの MAC アドレス) を保持する。
+    MacAddr([u8; 6]),
+    /// PostgreSQL の `MACADDR8` (8 バイトの MAC アドレス) を保持する。
+    MacAddr8([u8; 8]),
+}
+
+/// PostgreSQL の `INET` / `CIDR` の値。
+///
+/// アドレスとネットワークのプレフィックス長を持つ。プレフィックス長は IPv4 で 32 以下、
+/// IPv6 で 128 以下になる。範囲外の値をパラメーターに使うとサーバーがエラーを返す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IpNetwork {
+    /// アドレス。
+    pub address: IpAddr,
+    /// ネットワークのプレフィックス長。
+    pub prefix_len: u8,
+}
+
+impl IpNetwork {
+    /// アドレスの種類ごとのプレフィックス長の最大値 (IPv4 は 32、IPv6 は 128)。
+    pub fn max_prefix_len(&self) -> u8 {
+        match self.address {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        }
+    }
+
+    /// `inet` のテキスト形式にする。プレフィックス長が最大の場合は書かない。
+    fn to_inet_text(self) -> String {
+        if self.prefix_len == self.max_prefix_len() {
+            self.address.to_string()
+        } else {
+            format!("{}/{}", self.address, self.prefix_len)
+        }
+    }
+
+    /// `cidr` のテキスト形式にする。プレフィックス長を常に書く。
+    fn to_cidr_text(self) -> String {
+        format!("{}/{}", self.address, self.prefix_len)
+    }
+
+    /// `アドレス[/プレフィックス長]` を解析する。
+    ///
+    /// `require_prefix` が真の場合は `/` のない文字列を受け付けない。
+    fn parse(text: &str, require_prefix: bool) -> Option<Self> {
+        // PostgreSQL 19 の src/backend/utils/adt/network.c の network_out は、inet では
+        // プレフィックス長が最大のときに `/` 以降を省き、cidr では常に書く。アドレスは
+        // src/port/inet_net_ntop.c の書式で、std::net::IpAddr で読める。
+        // 将来の版で出力の書式が変わった場合はここを見直す。
+        let (address, prefix_len) = match text.split_once('/') {
+            Some((address, prefix_len)) => (address, Some(prefix_len)),
+            None if require_prefix => return None,
+            None => (text, None),
+        };
+        let address: IpAddr = address.parse().ok()?;
+        let mut network = Self {
+            address,
+            prefix_len: 0,
+        };
+        network.prefix_len = match prefix_len {
+            Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+                digits.parse().ok()?
+            }
+            Some(_) => return None,
+            None => network.max_prefix_len(),
+        };
+        (network.prefix_len <= network.max_prefix_len()).then_some(network)
+    }
+}
+
+/// MAC アドレスを `xx:xx:...` のテキスト形式にする。
+///
+/// PostgreSQL 19 の src/backend/utils/adt/mac.c と mac8.c の出力と同じく、16 進の小文字で書く。
+fn mac_to_text(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (i, byte) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// `xx:xx:...` のテキスト形式の MAC アドレスを解析する。
+///
+/// サーバーの出力と同じ、16 進の小文字 2 桁をコロンで区切った形だけを受け付ける。
+fn parse_mac<const N: usize>(text: &str) -> Option<[u8; N]> {
+    let mut out = [0_u8; N];
+    let mut parts = text.split(':');
+    for byte in &mut out {
+        let part = parts.next()?;
+        if part.len() != 2 || !part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        *byte = u8::from_str_radix(part, 16).ok()?;
+    }
+    parts.next().is_none().then_some(out)
 }
 
 impl Value {
@@ -94,6 +202,11 @@ impl Value {
             Value::Time(t) => Some(t.to_iso().into_bytes()),
             Value::Timestamp(dt) => Some(dt.to_iso().into_bytes()),
             Value::Timestamptz(dt) => Some(dt.to_iso().into_bytes()),
+            Value::Interval(interval) => Some(interval.to_postgres_style().into_bytes()),
+            Value::Inet(network) => Some(network.to_inet_text().into_bytes()),
+            Value::Cidr(network) => Some(network.to_cidr_text().into_bytes()),
+            Value::MacAddr(bytes) => Some(mac_to_text(bytes).into_bytes()),
+            Value::MacAddr8(bytes) => Some(mac_to_text(bytes).into_bytes()),
         }
     }
 }
@@ -150,9 +263,10 @@ fn escape_bytea(value: &[u8]) -> String {
 /// フィールド型 (OID) に対応するデコーダーを取得する。
 ///
 /// bool、整数、浮動小数点数、numeric、oid / oid8、bytea、uuid、json / jsonb、
-/// date / time / timestamp / timestamptz とそれらの配列は、対応する [`Value`] に変換する。
-/// interval や inet などそれ以外の型は [`Value::Text`] とし、[`oid::array`] に挙げた
-/// 組み込み型の配列は要素を `Value::Text` にした [`Value::Array`] とする。
+/// date / time / timestamp / timestamptz / interval、inet / cidr、macaddr / macaddr8 と
+/// それらの配列は、対応する [`Value`] に変換する。interval は `IntervalStyle=postgres` の
+/// 出力だけを変換する。timetz や範囲型などそれ以外の型は [`Value::Text`] とし、
+/// [`oid::array`] に挙げた組み込み型の配列は要素を `Value::Text` にした [`Value::Array`] とする。
 /// 独自の変換が必要な型は、接続の `register_converter` で登録する。
 pub fn decoder_for(type_oid: u32) -> Converter {
     match type_oid {
@@ -172,6 +286,11 @@ pub fn decoder_for(type_oid: u32) -> Converter {
         oid::TIME => convert_time,
         oid::TIMESTAMP => convert_timestamp,
         oid::TIMESTAMPTZ => convert_timestamptz,
+        oid::INTERVAL => convert_interval,
+        oid::INET => convert_inet,
+        oid::CIDR => convert_cidr,
+        oid::MACADDR => convert_macaddr,
+        oid::MACADDR8 => convert_macaddr8,
         // 配列型。要素型 OID を const ジェネリクスで固定した関数で変換する。
         oid::array::BOOL => convert_array_of::<{ oid::BOOL }>,
         oid::array::BYTEA => convert_array_of::<{ oid::BYTEA }>,
@@ -195,15 +314,15 @@ pub fn decoder_for(type_oid: u32) -> Converter {
         oid::array::TIME => convert_array_of::<{ oid::TIME }>,
         oid::array::TIMESTAMP => convert_array_of::<{ oid::TIMESTAMP }>,
         oid::array::TIMESTAMPTZ => convert_array_of::<{ oid::TIMESTAMPTZ }>,
-        // 変換せずテキストとして扱う組み込み型の配列。要素は `Value::Text` になる。
-        // box の配列は要素の区切りが `;` (pg_type.dat の typdelim) で、この配列の解析と
-        // 形式が異なるため含めない。
         oid::array::INTERVAL => convert_array_of::<{ oid::INTERVAL }>,
-        oid::array::TIMETZ => convert_array_of::<{ oid::TIMETZ }>,
         oid::array::INET => convert_array_of::<{ oid::INET }>,
         oid::array::CIDR => convert_array_of::<{ oid::CIDR }>,
         oid::array::MACADDR => convert_array_of::<{ oid::MACADDR }>,
         oid::array::MACADDR8 => convert_array_of::<{ oid::MACADDR8 }>,
+        // 変換せずテキストとして扱う組み込み型の配列。要素は `Value::Text` になる。
+        // box の配列は要素の区切りが `;` (pg_type.dat の typdelim) で、この配列の解析と
+        // 形式が異なるため含めない。
+        oid::array::TIMETZ => convert_array_of::<{ oid::TIMETZ }>,
         oid::array::MONEY => convert_array_of::<{ oid::MONEY }>,
         oid::array::BIT => convert_array_of::<{ oid::BIT }>,
         oid::array::VARBIT => convert_array_of::<{ oid::VARBIT }>,
@@ -504,6 +623,42 @@ fn convert_timestamp(s: &str) -> Value {
 fn convert_timestamptz(s: &str) -> Value {
     match Timestamptz::parse_iso(s) {
         Some(timestamp) => Value::Timestamptz(timestamp),
+        None => Value::Text(s.to_string()),
+    }
+}
+
+/// `IntervalStyle=postgres` の出力だけを変換し、ほかの形式はテキストのまま返す。
+fn convert_interval(s: &str) -> Value {
+    match Interval::parse_postgres_style(s) {
+        Some(interval) => Value::Interval(interval),
+        None => Value::Text(s.to_string()),
+    }
+}
+
+fn convert_inet(s: &str) -> Value {
+    match IpNetwork::parse(s, false) {
+        Some(network) => Value::Inet(network),
+        None => Value::Text(s.to_string()),
+    }
+}
+
+fn convert_cidr(s: &str) -> Value {
+    match IpNetwork::parse(s, true) {
+        Some(network) => Value::Cidr(network),
+        None => Value::Text(s.to_string()),
+    }
+}
+
+fn convert_macaddr(s: &str) -> Value {
+    match parse_mac(s) {
+        Some(bytes) => Value::MacAddr(bytes),
+        None => Value::Text(s.to_string()),
+    }
+}
+
+fn convert_macaddr8(s: &str) -> Value {
+    match parse_mac(s) {
+        Some(bytes) => Value::MacAddr8(bytes),
         None => Value::Text(s.to_string()),
     }
 }
@@ -1031,6 +1186,69 @@ impl TryFrom<&Value> for Timestamptz {
         match value {
             Value::Timestamptz(v) => Ok(*v),
             _ => Err(type_mismatch("TIMESTAMPTZ")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for Interval {
+    type Error = Error;
+
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::Interval(v) => Ok(*v),
+            _ => Err(type_mismatch("INTERVAL")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for IpNetwork {
+    type Error = Error;
+
+    /// `inet` と `cidr` の値を取り出す。
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::Inet(v) | Value::Cidr(v) => Ok(*v),
+            _ => Err(type_mismatch("INET or CIDR")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for IpAddr {
+    type Error = Error;
+
+    /// プレフィックス長が最大の `inet` の値 (ホストアドレス) を取り出す。
+    ///
+    /// ネットワークを表す値は、アドレスだけを取り出すと意味が変わるためエラーにする。
+    /// その場合は [`IpNetwork`] で取り出す。
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::Inet(v) if v.prefix_len == v.max_prefix_len() => Ok(v.address),
+            Value::Inet(_) => Err(Error::interface(
+                "Cannot read an INET value with a network prefix as an IP address; read it as IpNetwork",
+            )),
+            _ => Err(type_mismatch("INET")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for [u8; 6] {
+    type Error = Error;
+
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::MacAddr(v) => Ok(*v),
+            _ => Err(type_mismatch("MACADDR")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for [u8; 8] {
+    type Error = Error;
+
+    fn try_from(value: &Value) -> Result<Self> {
+        match value {
+            Value::MacAddr8(v) => Ok(*v),
+            _ => Err(type_mismatch("MACADDR8")),
         }
     }
 }
@@ -1792,6 +2010,103 @@ mod tests {
         assert_eq!(
             Vec::<Vec<u8>>::try_from(&byteas).expect("bytea[] を取り出せません"),
             vec![vec![1], Vec::new()]
+        );
+    }
+
+    /// inet / cidr と MAC アドレスは、サーバーが出力する形だけを型付きの値にする。
+    #[test]
+    fn test_network_and_mac_conversion() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let network = |address: IpAddr, prefix_len| IpNetwork {
+            address,
+            prefix_len,
+        };
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        // inet はプレフィックス長が最大のときに省かれ、cidr は常に書かれる。
+        assert_eq!(
+            decoder_for(oid::INET)("192.168.0.1"),
+            Value::Inet(network(v4, 32))
+        );
+        assert_eq!(
+            decoder_for(oid::INET)("192.168.0.1/24"),
+            Value::Inet(network(v4, 24))
+        );
+        assert_eq!(
+            decoder_for(oid::CIDR)("192.168.0.1/32"),
+            Value::Cidr(network(v4, 32))
+        );
+        // IPv4 を埋め込んだ IPv6 アドレスもサーバーの書式のまま読む。
+        assert_eq!(
+            decoder_for(oid::INET)("::ffff:1.2.3.4"),
+            Value::Inet(network(
+                IpAddr::V6(Ipv4Addr::new(1, 2, 3, 4).to_ipv6_mapped()),
+                128
+            ))
+        );
+        assert_eq!(
+            decoder_for(oid::INET)("::1.2.3.4/120"),
+            Value::Inet(network(
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0102, 0x0304)),
+                120
+            ))
+        );
+        assert_eq!(
+            Value::Inet(network(v4, 32)).to_bytes(),
+            Some(b"192.168.0.1".to_vec())
+        );
+        assert_eq!(
+            Value::Cidr(network(v4, 32)).to_bytes(),
+            Some(b"192.168.0.1/32".to_vec())
+        );
+        for (type_oid, text) in [
+            (oid::CIDR, "192.168.0.1"),
+            (oid::INET, "192.168.0.1/33"),
+            (oid::INET, "::1/129"),
+            (oid::INET, "192.168.0.1/"),
+            (oid::INET, "192.168.0.1/+8"),
+            (oid::INET, "fe80::1%eth0"),
+            (oid::MACADDR, "08:00:2B:01:02:03"),
+            (oid::MACADDR, "08:00:2b:01:02"),
+            (oid::MACADDR, "08:00:2b:01:02:03:04"),
+            (oid::MACADDR, "08-00-2b-01-02-03"),
+            (oid::MACADDR8, "08:00:2b:01:02:03"),
+        ] {
+            assert_eq!(
+                decoder_for(type_oid)(text),
+                Value::Text(text.to_string()),
+                "{text} を型付きの値にしました"
+            );
+        }
+        assert_eq!(
+            decoder_for(oid::MACADDR)("08:00:2b:01:02:03"),
+            Value::MacAddr([0x08, 0x00, 0x2b, 0x01, 0x02, 0x03])
+        );
+        assert_eq!(
+            Value::MacAddr8([0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x05]).to_bytes(),
+            Some(b"08:00:2b:01:02:03:04:05".to_vec())
+        );
+
+        // ホストアドレスの inet だけを IpAddr として取り出せる。
+        assert_eq!(
+            IpAddr::try_from(&Value::Inet(network(v4, 32)))
+                .expect("ホストアドレスを取り出せません"),
+            v4
+        );
+        let error = IpAddr::try_from(&Value::Inet(network(v4, 24)))
+            .expect_err("ネットワークの inet をアドレスとして取り出せました");
+        assert_eq!(
+            error.message(),
+            "Cannot read an INET value with a network prefix as an IP address; read it as IpNetwork"
+        );
+        let error = IpAddr::try_from(&Value::Cidr(network(v4, 32)))
+            .expect_err("cidr をアドレスとして取り出せました");
+        assert_eq!(
+            error.message(),
+            "Cannot read a column of another type as INET"
+        );
+        assert_eq!(
+            IpNetwork::try_from(&Value::Cidr(network(v4, 24))).expect("cidr を取り出せません"),
+            network(v4, 24)
         );
     }
 }
